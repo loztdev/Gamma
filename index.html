@@ -1,0 +1,1286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gamma — GLM-5.2 Chat</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+  :root {
+    --bg: #0c0e13;
+    --bg-2: #12151c;
+    --bg-3: #1a1e28;
+    --panel: #151922;
+    --border: #262c3a;
+    --text: #e6e9ef;
+    --text-dim: #9aa3b2;
+    --accent: #6ea8fe;
+    --accent-2: #8b7cff;
+    --good: #46d39a;
+    --warn: #ffb454;
+    --user: #1f3a5f;
+    --think: #15131f;
+    --radius: 12px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--sans);
+    background: radial-gradient(1200px 800px at 80% -10%, #1a2030 0%, var(--bg) 55%);
+    color: var(--text);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+    font-size: 15px;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    width: 320px;
+    flex-shrink: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 18px 18px 12px;
+  }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center; font-weight: 800; color: #0c0e13;
+    font-size: 19px;
+  }
+  .brand h1 { font-size: 17px; margin: 0; font-weight: 700; }
+  .brand small { color: var(--text-dim); font-size: 11px; display: block; margin-top: 1px; }
+
+  .section { padding: 12px 16px; border-top: 1px solid var(--border); }
+  .section h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--text-dim); margin: 0 0 10px; font-weight: 700;
+  }
+  label.field { display: block; margin-bottom: 10px; }
+  label.field span { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+  input[type=text], input[type=password], textarea, select {
+    width: 100%; background: var(--bg-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    font-family: var(--sans); outline: none;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 90px; font-family: var(--mono); line-height: 1.45; }
+
+  .btn {
+    background: var(--bg-3); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer;
+    font-family: var(--sans); transition: .15s; font-weight: 600;
+  }
+  .btn:hover { border-color: var(--accent); background: #20283a; }
+  .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #0c0e13; border: none; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.sm { padding: 5px 9px; font-size: 12px; }
+  .btn.danger:hover { border-color: #ff6b6b; color: #ff8585; }
+  .btn-row { display: flex; gap: 8px; }
+
+  .prompt-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .prompt-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; font-size: 13px;
+  }
+  .prompt-item.active { border-color: var(--accent); background: #18233a; }
+  .prompt-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prompt-item .x { color: var(--text-dim); font-size: 15px; line-height: 1; }
+  .prompt-item .x:hover { color: #ff8585; }
+
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 0; gap: 10px;
+  }
+  .toggle-row .lbl { font-size: 13px; font-weight: 600; }
+  .toggle-row .desc { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .switch { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
+  .switch input { display: none; }
+  .switch .slider {
+    position: absolute; inset: 0; background: var(--bg-3); border: 1px solid var(--border);
+    border-radius: 999px; transition: .2s; cursor: pointer;
+  }
+  .switch .slider:before {
+    content: ""; position: absolute; width: 18px; height: 18px; left: 2px; top: 2px;
+    background: var(--text-dim); border-radius: 50%; transition: .2s;
+  }
+  .switch input:checked + .slider { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
+  .switch input:checked + .slider:before { transform: translateX(18px); background: #0c0e13; }
+
+  /* ---------- Main ---------- */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .topbar {
+    height: 52px; flex-shrink: 0; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; padding: 0 18px;
+    background: rgba(18,21,28,.6); backdrop-filter: blur(6px);
+  }
+  .topbar .status { font-size: 12px; color: var(--text-dim); }
+  .topbar .pill {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .topbar .pill.on { color: var(--good); border-color: #2a5a47; background: #0f2018; }
+  .topbar .spacer { flex: 1; }
+
+  .messages { flex: 1; overflow-y: auto; padding: 24px 0; }
+  .msg-wrap { max-width: 820px; margin: 0 auto; padding: 0 20px; }
+  .msg { display: flex; gap: 14px; margin-bottom: 26px; }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: grid;
+    place-items: center; font-size: 13px; font-weight: 800;
+  }
+  .avatar.user { background: var(--user); color: #cfe0ff; }
+  .avatar.bot { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #0c0e13; }
+  .msg .body { flex: 1; min-width: 0; padding-top: 2px; }
+  .msg .who { font-size: 12px; color: var(--text-dim); margin-bottom: 5px; font-weight: 600; }
+
+  .content { line-height: 1.65; word-wrap: break-word; overflow-wrap: anywhere; }
+  .content p { margin: 0 0 12px; }
+  .content p:last-child { margin-bottom: 0; }
+  .content pre {
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 13px;
+  }
+  .content code { font-family: var(--mono); font-size: .9em; background: var(--bg-2); padding: 2px 5px; border-radius: 5px; }
+  .content pre code { background: none; padding: 0; }
+  .content h1,.content h2,.content h3 { margin: 18px 0 10px; line-height: 1.3; }
+  .content h1 { font-size: 1.4em; } .content h2 { font-size: 1.22em; } .content h3 { font-size: 1.08em; }
+  .content ul, .content ol { margin: 0 0 12px; padding-left: 22px; }
+  .content li { margin-bottom: 4px; }
+  .content blockquote { border-left: 3px solid var(--accent); margin: 0 0 12px; padding: 2px 0 2px 14px; color: var(--text-dim); }
+  .content table { border-collapse: collapse; margin: 0 0 12px; width: 100%; }
+  .content th, .content td { border: 1px solid var(--border); padding: 6px 10px; }
+  .content a { color: var(--accent); }
+  .content hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+  /* Thinking + stage blocks */
+  details.think, details.stage {
+    background: var(--think); border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 12px; overflow: hidden;
+  }
+  details.stage { background: #11151d; }
+  details > summary {
+    cursor: pointer; padding: 9px 14px; font-size: 12px; color: var(--text-dim);
+    font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px;
+    user-select: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary .ico { font-size: 13px; }
+  details > summary .spin { display: inline-block; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  details .inner {
+    padding: 4px 14px 14px; font-size: 13px; color: #b9c0cf; line-height: 1.6;
+    border-top: 1px solid var(--border);
+  }
+  details.think .inner { white-space: pre-wrap; font-family: var(--mono); font-size: 12.5px; color: #a9b2c4; }
+  .stage-badge {
+    display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 999px;
+    background: var(--bg-3); color: var(--accent); margin-left: 4px; font-weight: 700;
+  }
+
+  .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
+
+  .empty { text-align: center; color: var(--text-dim); margin-top: 12vh; padding: 0 20px; }
+  .empty h2 { color: var(--text); font-weight: 700; }
+  .empty .examples { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px; }
+  .empty .ex { background: var(--bg-2); border: 1px solid var(--border); border-radius: 999px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
+  .empty .ex:hover { border-color: var(--accent); }
+
+  /* Composer */
+  .composer { flex-shrink: 0; border-top: 1px solid var(--border); padding: 14px 20px 18px; background: rgba(18,21,28,.6); }
+  .composer-inner { max-width: 820px; margin: 0 auto; }
+  .input-box {
+    display: flex; gap: 10px; align-items: flex-end; background: var(--bg-2);
+    border: 1px solid var(--border); border-radius: 14px; padding: 10px 10px 10px 14px;
+  }
+  .input-box:focus-within { border-color: var(--accent); }
+  .input-box textarea {
+    border: none; background: none; padding: 4px 0; min-height: 24px; max-height: 220px;
+    font-family: var(--sans); font-size: 15px; resize: none;
+  }
+  .send-btn {
+    width: 38px; height: 38px; border-radius: 10px; border: none; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #0c0e13;
+    cursor: pointer; font-size: 17px; display: grid; place-items: center;
+  }
+  .send-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .send-btn.stop { background: #ff6b6b; color: #fff; }
+  .hint { font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 8px; }
+  .hint b { color: var(--text); }
+
+  .err { color: #ff8585; background: #2a1515; border: 1px solid #5a2a2a; padding: 10px 14px; border-radius: 10px; font-size: 13px; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2a3040; border-radius: 999px; border: 2px solid var(--panel); }
+  ::-webkit-scrollbar-thumb:hover { background: #38415a; }
+
+  @media (max-width: 780px) {
+    .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 30; transform: translateX(-100%); transition: .2s; box-shadow: 0 0 40px rgba(0,0,0,.5); }
+    .sidebar.open { transform: none; }
+    .menu-btn { display: grid !important; }
+    .scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 20; }
+    .scrim.show { display: block; }
+  }
+  .menu-btn { display: none; width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); place-items: center; cursor: pointer; }
+</style>
+</head>
+<body>
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="logo">Γ</div>
+      <div>
+        <h1>Gamma</h1>
+        <small>GLM-5.2 chat studio</small>
+      </div>
+    </div>
+
+    <!-- Chats -->
+    <div class="section">
+      <h2>Chats</h2>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn primary sm" id="newChat" style="flex:1">+ New chat</button>
+        <button class="btn sm" id="saveChatFile" title="Save current chat to a file you choose">💾 Save</button>
+        <button class="btn sm" id="openChatFile" title="Open a chat file from disk">📂 Open</button>
+      </div>
+      <div class="prompt-list" id="chatList"></div>
+    </div>
+
+    <!-- Connection -->
+    <div class="section">
+      <h2>Connection</h2>
+      <label class="field">
+        <span>Z.ai API key</span>
+        <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Model ID</span>
+        <input type="text" id="modelId" value="glm-5.2" />
+      </label>
+      <label class="field">
+        <span>Plan / endpoint</span>
+        <select id="planSelect">
+          <option value="https://api.z.ai/api/paas/v4/chat/completions">Standard API</option>
+          <option value="https://api.z.ai/api/coding/paas/v4/chat/completions">Coding Plan</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Endpoint URL (edit for a CORS proxy or custom)</span>
+        <input type="text" id="baseUrl" value="https://api.z.ai/api/paas/v4/chat/completions" />
+      </label>
+    </div>
+
+    <!-- System prompts -->
+    <div class="section">
+      <h2>System prompts</h2>
+      <div class="prompt-list" id="promptList"></div>
+      <label class="field">
+        <span>Name</span>
+        <input type="text" id="promptName" placeholder="e.g. Sci-fi editor" />
+      </label>
+      <label class="field">
+        <span>Content</span>
+        <textarea id="promptBody" placeholder="You are a meticulous writing assistant..."></textarea>
+      </label>
+      <div class="btn-row">
+        <button class="btn primary sm" id="savePrompt">Save prompt</button>
+        <button class="btn sm" id="newPrompt">New</button>
+      </div>
+    </div>
+
+    <!-- Modes -->
+    <div class="section">
+      <h2>Modes</h2>
+      <div class="toggle-row">
+        <div>
+          <div class="lbl">Web search</div>
+          <div class="desc">Let GLM look things up live</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="webSearch" /><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="lbl">Writing Room ✍️</div>
+          <div class="desc">4-pass pipeline: outline → cast → prose → polish</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="writingRoom" /><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="lbl">Stream thinking</div>
+          <div class="desc">Show reasoning as it streams</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="streamThink" checked /><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <!-- Writing Room stage prompts -->
+    <div class="section">
+      <h2>Writing Room prompts</h2>
+      <div style="font-size:11px;color:var(--text-dim);margin:-4px 0 10px;">Customise each stage's system prompt. Save a set as a preset to load later.</div>
+      <div id="roomPromptEditors"></div>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn sm" id="resetRoomPrompts">Reset to defaults</button>
+        <button class="btn primary sm" id="saveRoomPreset">Save as preset</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Saved presets — click to load:</div>
+      <div class="prompt-list" id="roomPresetList"></div>
+      <div class="btn-row">
+        <button class="btn sm" id="exportPresets" style="flex:1" title="Save all presets to a file you choose">⬆ Export presets</button>
+        <button class="btn sm" id="importPresets" style="flex:1" title="Load presets from a file">⬇ Import presets</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <button class="btn danger sm" id="clearChat" style="width:100%">Clear conversation</button>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+    <div class="topbar">
+      <button class="menu-btn" id="menuBtn">☰</button>
+      <span class="pill" id="modelPill">glm-5.2</span>
+      <span class="pill" id="planPill">standard</span>
+      <span class="pill" id="webPill">web off</span>
+      <span class="pill" id="roomPill">room off</span>
+      <div class="spacer"></div>
+      <span class="status" id="sysPill">No system prompt</span>
+    </div>
+
+    <div class="messages" id="messages">
+      <div class="empty" id="empty">
+        <div class="logo" style="width:54px;height:54px;border-radius:14px;margin:0 auto 16px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;font-weight:800;color:#0c0e13;font-size:30px;">Γ</div>
+        <h2>Chat with GLM-5.2</h2>
+        <p>Streamed thinking · Markdown · Web search · a 4-model Writing Room.</p>
+        <div class="examples">
+          <div class="ex">Write a tense scene where two rivals are forced to cooperate</div>
+          <div class="ex">Explain how diffusion models work, with a diagram in text</div>
+          <div class="ex">Outline a heist short story set in 1920s Shanghai</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="input-box">
+          <textarea id="input" rows="1" placeholder="Message GLM-5.2…  (Enter to send, Shift+Enter for newline)"></textarea>
+          <button class="send-btn" id="send" title="Send">➤</button>
+        </div>
+        <div class="hint">Your API key &amp; prompts stay in <b>this browser only</b> (localStorage). Powered by Z.ai GLM-5.2.</div>
+      </div>
+    </div>
+  </main>
+
+<script>
+"use strict";
+
+/* =================================================================
+   Storage helpers
+================================================================= */
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+};
+
+const state = {
+  apiKey: LS.get("gamma.apiKey", ""),
+  modelId: LS.get("gamma.modelId", "glm-5.2"),
+  baseUrl: LS.get("gamma.baseUrl", "https://api.z.ai/api/paas/v4/chat/completions"),
+  prompts: LS.get("gamma.prompts", []),          // [{id,name,body}]
+  activePrompt: LS.get("gamma.activePrompt", null),
+  webSearch: LS.get("gamma.webSearch", false),
+  writingRoom: LS.get("gamma.writingRoom", false),
+  streamThink: LS.get("gamma.streamThink", true),
+  roomPrompts: LS.get("gamma.roomPrompts", {}),   // {outline,cast,prose,polish} live stage prompts
+  roomPresets: LS.get("gamma.roomPresets", []),   // [{id,name,prompts:{...}}]
+  chats: LS.get("gamma.chats", []),               // [{id,title,messages:[{role,content}],updatedAt}]
+  currentChatId: LS.get("gamma.currentChatId", null),
+};
+
+// In-memory file handles (File System Access API) per chat id, so re-saving
+// goes back to the same file the user picked. Not serialisable -> not persisted.
+const fileHandles = new Map();
+
+/* =================================================================
+   Element refs
+================================================================= */
+const $ = (id) => document.getElementById(id);
+const el = {
+  apiKey: $("apiKey"), modelId: $("modelId"), baseUrl: $("baseUrl"), planSelect: $("planSelect"),
+  newChat: $("newChat"), saveChatFile: $("saveChatFile"), openChatFile: $("openChatFile"), chatList: $("chatList"),
+  promptList: $("promptList"), promptName: $("promptName"), promptBody: $("promptBody"),
+  savePrompt: $("savePrompt"), newPrompt: $("newPrompt"),
+  webSearch: $("webSearch"), writingRoom: $("writingRoom"), streamThink: $("streamThink"),
+  roomPromptEditors: $("roomPromptEditors"), resetRoomPrompts: $("resetRoomPrompts"),
+  saveRoomPreset: $("saveRoomPreset"), roomPresetList: $("roomPresetList"),
+  exportPresets: $("exportPresets"), importPresets: $("importPresets"),
+  clearChat: $("clearChat"),
+  messages: $("messages"), empty: $("empty"),
+  input: $("input"), send: $("send"),
+  modelPill: $("modelPill"), planPill: $("planPill"), webPill: $("webPill"), roomPill: $("roomPill"), sysPill: $("sysPill"),
+  menuBtn: $("menuBtn"), sidebar: $("sidebar"), scrim: $("scrim"),
+};
+
+/* =================================================================
+   Markdown rendering (sanitised)
+================================================================= */
+marked.setOptions({ breaks: true, gfm: true });
+function renderMd(text) {
+  return DOMPurify.sanitize(marked.parse(text || ""));
+}
+
+/* =================================================================
+   Init UI from state
+================================================================= */
+function syncControls() {
+  el.apiKey.value = state.apiKey;
+  el.modelId.value = state.modelId;
+  el.baseUrl.value = state.baseUrl;
+  // reflect endpoint in the plan dropdown (preset match, else "custom")
+  const presetMatch = Array.from(el.planSelect.options).some(o => o.value === state.baseUrl);
+  el.planSelect.value = presetMatch ? state.baseUrl : "custom";
+  const planLabel = el.planSelect.options[el.planSelect.selectedIndex].text;
+  el.modelPill.title = planLabel + " · " + state.baseUrl;
+  const isCoding = state.baseUrl.includes("/coding/");
+  el.planPill.textContent = isCoding ? "coding plan" : (presetMatch ? "standard" : "custom");
+  el.planPill.classList.toggle("on", isCoding);
+  el.planPill.title = state.baseUrl;
+  el.webSearch.checked = state.webSearch;
+  el.writingRoom.checked = state.writingRoom;
+  el.streamThink.checked = state.streamThink;
+  el.modelPill.textContent = state.modelId || "glm-5.2";
+  el.webPill.textContent = state.webSearch ? "web on" : "web off";
+  el.webPill.classList.toggle("on", state.webSearch);
+  el.roomPill.textContent = state.writingRoom ? "writing room" : "room off";
+  el.roomPill.classList.toggle("on", state.writingRoom);
+  const ap = activePromptObj();
+  el.sysPill.textContent = ap ? "System: " + ap.name : "No system prompt";
+}
+
+function activePromptObj() {
+  return state.prompts.find(p => p.id === state.activePrompt) || null;
+}
+
+/* =================================================================
+   Chat sessions (local, multi-conversation)
+================================================================= */
+function saveChats() { LS.set("gamma.chats", state.chats); LS.set("gamma.currentChatId", state.currentChatId); }
+
+function currentChat() {
+  let c = state.chats.find(x => x.id === state.currentChatId);
+  if (!c) {
+    c = { id: "c_" + Date.now().toString(36), title: "New chat", messages: [], updatedAt: Date.now() };
+    state.chats.unshift(c);
+    state.currentChatId = c.id;
+    saveChats();
+  }
+  return c;
+}
+function messages() { return currentChat().messages; }
+
+function titleFor(chat) {
+  if (chat.title && chat.title !== "New chat") return chat.title;
+  const firstUser = chat.messages.find(m => m.role === "user");
+  if (firstUser) return firstUser.content.replace(/\s+/g, " ").slice(0, 42);
+  return "New chat";
+}
+
+function touchChat() {
+  const c = currentChat();
+  c.updatedAt = Date.now();
+  c.title = titleFor(c);
+  // keep most-recent first
+  state.chats.sort((a, b) => b.updatedAt - a.updatedAt);
+  saveChats();
+  renderChatList();
+}
+
+function newChat() {
+  const c = { id: "c_" + Date.now().toString(36), title: "New chat", messages: [], updatedAt: Date.now() };
+  state.chats.unshift(c);
+  state.currentChatId = c.id;
+  saveChats();
+  renderChat();
+  renderChatList();
+  el.input.focus();
+}
+
+function switchChat(id) {
+  if (busy) { alert("Wait for the current response to finish first."); return; }
+  state.currentChatId = id;
+  saveChats();
+  renderChat();
+  renderChatList();
+}
+
+function deleteChat(id) {
+  state.chats = state.chats.filter(c => c.id !== id);
+  fileHandles.delete(id);
+  if (state.currentChatId === id) state.currentChatId = state.chats[0] ? state.chats[0].id : null;
+  saveChats();
+  renderChat();
+  renderChatList();
+}
+
+function renameChat(id) {
+  const c = state.chats.find(x => x.id === id);
+  if (!c) return;
+  const name = prompt("Rename chat:", c.title);
+  if (name && name.trim()) { c.title = name.trim(); saveChats(); renderChatList(); }
+}
+
+function renderChatList() {
+  el.chatList.innerHTML = "";
+  if (!state.chats.length) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;color:var(--text-dim);padding:4px 2px;";
+    d.textContent = "No chats yet.";
+    el.chatList.appendChild(d);
+    return;
+  }
+  state.chats.forEach(c => {
+    const row = document.createElement("div");
+    row.className = "prompt-item" + (c.id === state.currentChatId ? " active" : "");
+    const hasFile = fileHandles.has(c.id) ? " 💾" : "";
+    row.innerHTML = `<span class="name">${escapeHtml(titleFor(c))}${hasFile}</span>
+      <span class="x" title="Rename" data-act="rename">✎</span>
+      <span class="x" title="Delete" data-act="del">✕</span>`;
+    row.querySelector(".name").onclick = () => switchChat(c.id);
+    row.querySelector('[data-act="rename"]').onclick = (e) => { e.stopPropagation(); renameChat(c.id); };
+    row.querySelector('[data-act="del"]').onclick = (e) => {
+      e.stopPropagation();
+      if (confirm("Delete this chat?")) deleteChat(c.id);
+    };
+    el.chatList.appendChild(row);
+  });
+}
+
+/** Rebuild the message pane from the active chat's stored messages. */
+function renderChat() {
+  el.messages.innerHTML = "";
+  el.messages.appendChild(el.empty);
+  const msgs = messages();
+  if (!msgs.length) { el.empty.style.display = ""; return; }
+  el.empty.style.display = "none";
+  for (const m of msgs) {
+    if (m.role === "user") addUserMessage(m.content);
+    else addStaticAssistant(m.content);
+  }
+  scrollToBottom();
+}
+
+/* =================================================================
+   File save / load — user picks WHERE
+================================================================= */
+function chatToBlob(chat) {
+  return new Blob([JSON.stringify({
+    app: "gamma", version: 1, exportedAt: new Date().toISOString(),
+    title: titleFor(chat), messages: chat.messages
+  }, null, 2)], { type: "application/json" });
+}
+
+async function saveChatToFile() {
+  const chat = currentChat();
+  if (!chat.messages.length) { alert("This chat is empty."); return; }
+  const blob = chatToBlob(chat);
+  const fname = (titleFor(chat).replace(/[^\w\- ]+/g, "").trim() || "gamma-chat").slice(0, 40) + ".json";
+  // Preferred: File System Access API -> user picks location, reusable handle
+  if (window.showSaveFilePicker) {
+    try {
+      let handle = fileHandles.get(chat.id);
+      if (!handle) {
+        handle = await window.showSaveFilePicker({
+          suggestedName: fname,
+          types: [{ description: "Gamma chat", accept: { "application/json": [".json"] } }],
+        });
+        fileHandles.set(chat.id, handle);
+      }
+      const w = await handle.createWritable();
+      await w.write(blob); await w.close();
+      renderChatList();
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // user cancelled
+      // otherwise fall through to download
+    }
+  }
+  // Fallback: trigger a download (browser decides/asks where)
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = fname; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function openChatFromFile() {
+  let text = null, handle = null;
+  if (window.showOpenFilePicker) {
+    try {
+      const [h] = await window.showOpenFilePicker({
+        types: [{ description: "Gamma chat", accept: { "application/json": [".json"] } }],
+      });
+      handle = h;
+      const file = await h.getFile();
+      text = await file.text();
+    } catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  if (text === null) {
+    // Fallback: hidden file input
+    text = await new Promise((resolve) => {
+      const inp = document.createElement("input");
+      inp.type = "file"; inp.accept = ".json,application/json";
+      inp.onchange = () => {
+        const f = inp.files[0];
+        if (!f) return resolve(null);
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.readAsText(f);
+      };
+      inp.click();
+    });
+    if (text === null) return;
+  }
+  try {
+    const data = JSON.parse(text);
+    const msgs = Array.isArray(data.messages) ? data.messages : null;
+    if (!msgs) throw new Error("Not a valid Gamma chat file.");
+    const chat = {
+      id: "c_" + Date.now().toString(36),
+      title: data.title || "Imported chat",
+      messages: msgs.filter(m => m && m.role && typeof m.content === "string"),
+      updatedAt: Date.now(),
+    };
+    state.chats.unshift(chat);
+    state.currentChatId = chat.id;
+    if (handle) fileHandles.set(chat.id, handle);
+    saveChats();
+    renderChat();
+    renderChatList();
+  } catch (e) {
+    alert("Could not open file: " + e.message);
+  }
+}
+
+/* =================================================================
+   Writing Room stage prompts (editable + savable presets)
+================================================================= */
+function roomPromptVal(key) { return state.roomPrompts[key] || ROOM_DEFAULTS[key].sys; }
+
+function renderRoomEditors() {
+  el.roomPromptEditors.innerHTML = "";
+  ROOM_KEYS.forEach(key => {
+    const def = ROOM_DEFAULTS[key];
+    const wrap = document.createElement("label");
+    wrap.className = "field";
+    wrap.innerHTML = `<span>${def.label}${def.web ? " · web 🔎" : ""}</span>`;
+    const ta = document.createElement("textarea");
+    ta.style.minHeight = "72px";
+    ta.value = roomPromptVal(key);
+    ta.oninput = () => { state.roomPrompts[key] = ta.value; LS.set("gamma.roomPrompts", state.roomPrompts); };
+    wrap.appendChild(ta);
+    el.roomPromptEditors.appendChild(wrap);
+  });
+}
+
+function renderRoomPresets() {
+  el.roomPresetList.innerHTML = "";
+  if (!state.roomPresets.length) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;color:var(--text-dim);padding:2px;";
+    d.textContent = "No presets saved yet.";
+    el.roomPresetList.appendChild(d);
+    return;
+  }
+  state.roomPresets.forEach(p => {
+    const row = document.createElement("div");
+    row.className = "prompt-item";
+    row.innerHTML = `<span class="name">${escapeHtml(p.name)}</span><span class="x" title="Delete">✕</span>`;
+    row.querySelector(".name").onclick = () => {
+      state.roomPrompts = Object.assign({}, p.prompts);
+      LS.set("gamma.roomPrompts", state.roomPrompts);
+      renderRoomEditors();
+    };
+    row.querySelector(".x").onclick = (e) => {
+      e.stopPropagation();
+      state.roomPresets = state.roomPresets.filter(x => x.id !== p.id);
+      LS.set("gamma.roomPresets", state.roomPresets);
+      renderRoomPresets();
+    };
+    el.roomPresetList.appendChild(row);
+  });
+}
+
+el.resetRoomPrompts.onclick = () => {
+  if (!confirm("Reset all four stage prompts to their defaults?")) return;
+  state.roomPrompts = {};
+  LS.set("gamma.roomPrompts", state.roomPrompts);
+  renderRoomEditors();
+};
+el.saveRoomPreset.onclick = () => {
+  const name = prompt("Name this Writing Room preset:");
+  if (!name || !name.trim()) return;
+  const prompts = {};
+  ROOM_KEYS.forEach(k => prompts[k] = roomPromptVal(k));
+  const existing = state.roomPresets.find(p => p.name === name.trim());
+  if (existing) existing.prompts = prompts;
+  else state.roomPresets.push({ id: "rp_" + Date.now().toString(36), name: name.trim(), prompts });
+  LS.set("gamma.roomPresets", state.roomPresets);
+  renderRoomPresets();
+};
+
+/* Reusable file pickers (used for preset export/import) */
+async function saveBlobAs(blob, suggestedName) {
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
+      });
+      const w = await handle.createWritable(); await w.write(blob); await w.close();
+      return true;
+    } catch (e) { if (e && e.name === "AbortError") return false; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = suggestedName; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
+}
+async function pickFileText() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [h] = await window.showOpenFilePicker({ types: [{ description: "JSON", accept: { "application/json": [".json"] } }] });
+      return await (await h.getFile()).text();
+    } catch (e) { if (e && e.name === "AbortError") return null; }
+  }
+  return await new Promise((resolve) => {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".json,application/json";
+    inp.onchange = () => { const f = inp.files[0]; if (!f) return resolve(null); const r = new FileReader(); r.onload = () => resolve(r.result); r.readAsText(f); };
+    inp.click();
+  });
+}
+
+el.exportPresets.onclick = async () => {
+  if (!state.roomPresets.length) { alert("No presets to export yet — save one first."); return; }
+  const blob = new Blob([JSON.stringify({
+    app: "gamma", kind: "room-presets", version: 1,
+    exportedAt: new Date().toISOString(), presets: state.roomPresets,
+  }, null, 2)], { type: "application/json" });
+  await saveBlobAs(blob, "gamma-room-presets.json");
+};
+el.importPresets.onclick = async () => {
+  const text = await pickFileText();
+  if (text === null) return;
+  try {
+    const data = JSON.parse(text);
+    const incoming = Array.isArray(data.presets) ? data.presets : (Array.isArray(data) ? data : null);
+    if (!incoming) throw new Error("Not a Gamma presets file.");
+    let added = 0;
+    incoming.forEach(p => {
+      if (!p || !p.name || !p.prompts) return;
+      const prompts = {};
+      ROOM_KEYS.forEach(k => { if (typeof p.prompts[k] === "string") prompts[k] = p.prompts[k]; });
+      const exists = state.roomPresets.find(x => x.name === String(p.name));
+      if (exists) exists.prompts = prompts;
+      else state.roomPresets.push({ id: "rp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: String(p.name), prompts });
+      added++;
+    });
+    LS.set("gamma.roomPresets", state.roomPresets);
+    renderRoomPresets();
+    alert("Imported " + added + " preset(s).");
+  } catch (e) { alert("Could not import: " + e.message); }
+};
+
+/* ---- System prompt list ---- */
+function renderPrompts() {
+  el.promptList.innerHTML = "";
+  if (!state.prompts.length) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;color:var(--text-dim);padding:4px 2px;";
+    d.textContent = "No saved prompts yet.";
+    el.promptList.appendChild(d);
+  }
+  state.prompts.forEach(p => {
+    const row = document.createElement("div");
+    row.className = "prompt-item" + (p.id === state.activePrompt ? " active" : "");
+    row.innerHTML = `<span class="name">${escapeHtml(p.name)}</span><span class="x" title="Delete">✕</span>`;
+    row.querySelector(".name").onclick = () => {
+      state.activePrompt = (state.activePrompt === p.id) ? null : p.id;
+      LS.set("gamma.activePrompt", state.activePrompt);
+      // load into editor for convenience
+      if (state.activePrompt) { el.promptName.value = p.name; el.promptBody.value = p.body; }
+      renderPrompts(); syncControls();
+    };
+    row.querySelector(".x").onclick = (e) => {
+      e.stopPropagation();
+      state.prompts = state.prompts.filter(x => x.id !== p.id);
+      if (state.activePrompt === p.id) state.activePrompt = null;
+      LS.set("gamma.prompts", state.prompts);
+      LS.set("gamma.activePrompt", state.activePrompt);
+      renderPrompts(); syncControls();
+    };
+    el.promptList.appendChild(row);
+  });
+}
+
+function escapeHtml(s) { return (s || "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+
+/* =================================================================
+   Event wiring — settings
+================================================================= */
+el.apiKey.oninput = () => { state.apiKey = el.apiKey.value.trim(); LS.set("gamma.apiKey", state.apiKey); };
+el.modelId.oninput = () => { state.modelId = el.modelId.value.trim() || "glm-5.2"; LS.set("gamma.modelId", state.modelId); syncControls(); };
+el.baseUrl.oninput = () => { state.baseUrl = el.baseUrl.value.trim(); LS.set("gamma.baseUrl", state.baseUrl); syncControls(); };
+el.planSelect.onchange = () => {
+  if (el.planSelect.value === "custom") { el.baseUrl.focus(); return; }
+  state.baseUrl = el.planSelect.value;
+  LS.set("gamma.baseUrl", state.baseUrl);
+  syncControls();
+};
+el.webSearch.onchange = () => { state.webSearch = el.webSearch.checked; LS.set("gamma.webSearch", state.webSearch); syncControls(); };
+el.writingRoom.onchange = () => { state.writingRoom = el.writingRoom.checked; LS.set("gamma.writingRoom", state.writingRoom); syncControls(); };
+el.streamThink.onchange = () => { state.streamThink = el.streamThink.checked; LS.set("gamma.streamThink", state.streamThink); };
+
+el.savePrompt.onclick = () => {
+  const name = el.promptName.value.trim();
+  const body = el.promptBody.value.trim();
+  if (!name || !body) { alert("Give the prompt a name and content."); return; }
+  // update active if editing it, else create new
+  const existing = state.prompts.find(p => p.name === name);
+  if (existing) { existing.body = body; state.activePrompt = existing.id; }
+  else {
+    const id = "p_" + Date.now().toString(36);
+    state.prompts.push({ id, name, body });
+    state.activePrompt = id;
+  }
+  LS.set("gamma.prompts", state.prompts);
+  LS.set("gamma.activePrompt", state.activePrompt);
+  renderPrompts(); syncControls();
+};
+el.newPrompt.onclick = () => { el.promptName.value = ""; el.promptBody.value = ""; el.promptName.focus(); };
+
+el.clearChat.onclick = () => {
+  const c = currentChat();
+  if (!c.messages.length || confirm("Clear messages in this chat?")) {
+    c.messages = [];
+    c.title = "New chat";
+    saveChats();
+    renderChat();
+    renderChatList();
+  }
+};
+
+el.newChat.onclick = newChat;
+el.saveChatFile.onclick = saveChatToFile;
+el.openChatFile.onclick = openChatFromFile;
+
+/* mobile menu */
+el.menuBtn.onclick = () => { el.sidebar.classList.add("open"); el.scrim.classList.add("show"); };
+el.scrim.onclick = () => { el.sidebar.classList.remove("open"); el.scrim.classList.remove("show"); };
+
+/* example chips */
+document.querySelectorAll(".ex").forEach(e => e.onclick = () => { el.input.value = e.textContent; autoGrow(); el.input.focus(); });
+
+/* textarea autogrow + enter to send */
+function autoGrow() { el.input.style.height = "auto"; el.input.style.height = Math.min(el.input.scrollHeight, 220) + "px"; }
+el.input.addEventListener("input", autoGrow);
+el.input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); }
+});
+
+/* =================================================================
+   DOM builders for chat
+================================================================= */
+function scrollToBottom() { el.messages.scrollTop = el.messages.scrollHeight; }
+
+function addUserMessage(text) {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar user">You</div>
+      <div class="body"><div class="who">You</div><div class="content"></div></div>
+    </div>`;
+  wrap.querySelector(".content").innerHTML = renderMd(text);
+  el.messages.appendChild(wrap);
+  scrollToBottom();
+}
+
+/** Creates an assistant message shell and returns helpers to update it. */
+function addAssistantMessage() {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar bot">Γ</div>
+      <div class="body"><div class="who">GLM-5.2</div><div class="slots"></div></div>
+    </div>`;
+  const slots = wrap.querySelector(".slots");
+  el.messages.appendChild(wrap);
+  scrollToBottom();
+  return { wrap, slots };
+}
+
+/** Renders a finished assistant message (used when loading saved chats). */
+function addStaticAssistant(text) {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar bot">Γ</div>
+      <div class="body"><div class="who">GLM-5.2</div><div class="content"></div></div>
+    </div>`;
+  wrap.querySelector(".content").innerHTML = renderMd(text);
+  el.messages.appendChild(wrap);
+}
+
+/** A collapsible thinking block. */
+function makeThinkBlock(slots, label) {
+  const d = document.createElement("details");
+  d.className = "think";
+  d.open = true;
+  d.innerHTML = `<summary><span class="ico spin">⟳</span> <span class="t">${label || "Thinking…"}</span></summary><div class="inner"></div>`;
+  slots.appendChild(d);
+  const inner = d.querySelector(".inner");
+  return {
+    append(t) { inner.textContent += t; scrollToBottom(); },
+    done(collapsedLabel) {
+      d.querySelector(".ico").className = "ico";
+      d.querySelector(".ico").textContent = "✓";
+      d.querySelector(".t").textContent = collapsedLabel || "Thought process";
+      d.open = false;
+    },
+    hideIfEmpty() { if (!inner.textContent.trim()) d.remove(); }
+  };
+}
+
+/** A content block rendered as markdown, streamed. */
+function makeContentBlock(slots) {
+  const c = document.createElement("div");
+  c.className = "content cursor";
+  slots.appendChild(c);
+  let raw = "";
+  return {
+    append(t) { raw += t; c.innerHTML = renderMd(raw); c.classList.add("cursor"); scrollToBottom(); },
+    set(t) { raw = t; c.innerHTML = renderMd(raw); },
+    done() { c.classList.remove("cursor"); c.innerHTML = renderMd(raw); },
+    get text() { return raw; }
+  };
+}
+
+/** A labelled collapsible stage block (for Writing Room passes). */
+function makeStageBlock(slots, label, badge) {
+  const d = document.createElement("details");
+  d.className = "stage";
+  d.open = true;
+  d.innerHTML = `<summary><span class="ico spin">⟳</span> <span class="t">${label}</span> <span class="stage-badge">${badge}</span></summary><div class="inner"></div>`;
+  slots.appendChild(d);
+  const inner = d.querySelector(".inner");
+  return { d, inner,
+    done() { d.querySelector(".ico").className = "ico"; d.querySelector(".ico").textContent = "✓"; d.open = false; }
+  };
+}
+
+function showError(slots, msg) {
+  const e = document.createElement("div");
+  e.className = "err";
+  e.textContent = "⚠ " + msg;
+  slots.appendChild(e);
+  scrollToBottom();
+}
+
+/* =================================================================
+   Z.ai GLM streaming call
+   Yields {type:'thinking'|'content', text} via onDelta callback.
+   Returns {content, reasoning}.
+================================================================= */
+async function streamGLM({ messages, webSearch, onThink, onContent, signal }) {
+  if (!state.apiKey) throw new Error("Add your Z.ai API key in the sidebar first.");
+
+  const body = {
+    model: state.modelId || "glm-5.2",
+    messages,
+    stream: true,
+    thinking: { type: "enabled" },
+  };
+  if (webSearch) {
+    body.tools = [{
+      type: "web_search",
+      web_search: { enable: true, search_engine: "search_std", search_result: true }
+    }];
+  }
+
+  const res = await fetch(state.baseUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + state.apiKey,
+      "Accept": "text/event-stream",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) {
+    let detail = "";
+    try { detail = await res.text(); } catch {}
+    throw new Error(`API error ${res.status}: ${detail.slice(0, 400) || res.statusText}`);
+  }
+  if (!res.body) throw new Error("No response stream from server.");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "", reasoning = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let idx;
+    while ((idx = buffer.indexOf("\n")) !== -1) {
+      let line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (data === "[DONE]") continue;
+      let json;
+      try { json = JSON.parse(data); } catch { continue; }
+      const delta = json.choices && json.choices[0] && json.choices[0].delta;
+      if (!delta) continue;
+      if (delta.reasoning_content) { reasoning += delta.reasoning_content; onThink && onThink(delta.reasoning_content); }
+      if (delta.content) { content += delta.content; onContent && onContent(delta.content); }
+    }
+  }
+  return { content, reasoning };
+}
+
+/* =================================================================
+   Conversation send (normal mode)
+================================================================= */
+let currentAbort = null;
+
+function buildMessages(extraSystem) {
+  const msgs = [];
+  const ap = activePromptObj();
+  const sys = [ap ? ap.body : "", extraSystem || ""].filter(Boolean).join("\n\n");
+  if (sys) msgs.push({ role: "system", content: sys });
+  for (const m of messages()) msgs.push({ role: m.role, content: m.content });
+  return msgs;
+}
+
+async function runNormal(userText) {
+  const { slots } = addAssistantMessage();
+  let think = null;
+  if (state.streamThink) think = makeThinkBlock(slots, "Thinking…");
+  const out = makeContentBlock(slots);
+
+  try {
+    const { content } = await streamGLM({
+      messages: buildMessages(),
+      webSearch: state.webSearch,
+      onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
+      onContent: (t) => out.append(t),
+      signal: currentAbort.signal,
+    });
+    if (think) { think.done("Thought process"); think.hideIfEmpty(); }
+    out.done();
+    messages().push({ role: "assistant", content: content || "*(no content returned)*" });
+    touchChat();
+  } catch (err) {
+    if (think) think.hideIfEmpty();
+    if (err.name === "AbortError") { out.append("\n\n_(stopped)_"); out.done(); }
+    else { showError(slots, err.message); }
+    throw err;
+  }
+}
+
+/* =================================================================
+   Writing Room — 4-pass pipeline
+   1) Outline   2) Characters/roleplay (web search)   3) Prose   4) Final polish
+================================================================= */
+const ROOM_KEYS = ["outline", "cast", "prose", "polish"];
+const ROOM_DEFAULTS = {
+  outline: {
+    label: "Pass 1 · Outline", badge: "architect",
+    sys: "You are the STORY ARCHITECT in a collaborative writing room. Produce a tight, vivid outline for the user's request: premise, setting, central tension, a beat-by-beat structure, and the intended tone/POV. Be concrete and economical. Output Markdown.",
+  },
+  cast: {
+    label: "Pass 2 · Cast & voices", badge: "roleplay",
+    web: true,
+    sys: "You are the CASTING DIRECTOR & ROLEPLAYER in a writing room. Using the outline, identify every character. For each: give a profile (motivation, voice, mannerisms, secrets) and a short in-character monologue or line of dialogue that captures their voice. If any character is a real or well-known fictional figure, USE WEB SEARCH to ground their portrayal in accurate detail, and note what you found. Output Markdown.",
+  },
+  prose: {
+    label: "Pass 3 · Prose draft", badge: "writer",
+    sys: "You are the PROSE WRITER in a writing room. Using the outline and the character voices, write the actual draft — strong, sensory, well-paced prose that honors each character's established voice. Favor showing over telling. Output Markdown.",
+  },
+  polish: {
+    label: "Pass 4 · Final cut", badge: "editor",
+    sys: "You are the SHOWRUNNER/EDITOR who brings everything together. Take the outline, the cast voices, and the prose draft, and deliver the FINAL polished piece for the reader: tighten prose, ensure continuity and consistent voices, fix pacing, and present a clean finished result. Output only the finished piece in Markdown (no meta-commentary).",
+  },
+};
+// Returns the live config for a stage: defaults (label/badge/web) + the user's
+// current (possibly edited) system prompt text.
+function roomStage(key) {
+  return Object.assign({}, ROOM_DEFAULTS[key], { sys: state.roomPrompts[key] || ROOM_DEFAULTS[key].sys });
+}
+
+async function runWritingRoom(userText) {
+  const { slots } = addAssistantMessage();
+  const ap = activePromptObj();
+  const baseSys = ap ? ap.body + "\n\n" : "";
+  const artifacts = {};
+
+  async function pass(key, contextText) {
+    const cfg = roomStage(key);
+    const stage = makeStageBlock(slots, cfg.label, cfg.badge);
+    let think = null;
+    if (state.streamThink) think = makeThinkBlockIn(stage.inner, "Thinking…");
+    const out = makeContentBlockIn(stage.inner);
+
+    const messages = [
+      { role: "system", content: baseSys + cfg.sys },
+      { role: "user", content: contextText },
+    ];
+    const useWeb = state.webSearch || !!cfg.web;
+    const { content } = await streamGLM({
+      messages, webSearch: useWeb,
+      onThink: (t) => { if (!think) think = makeThinkBlockIn(stage.inner, "Thinking…"); think.append(t); },
+      onContent: (t) => out.append(t),
+      signal: currentAbort.signal,
+    });
+    if (think) { think.done("Thought process"); think.hideIfEmpty(); }
+    out.done();
+    stage.done();
+    return content || "";
+  }
+
+  try {
+    artifacts.outline = await pass("outline",
+      `Writing request from the user:\n\n${userText}\n\nProduce the outline.`);
+
+    artifacts.cast = await pass("cast",
+      `User request:\n${userText}\n\nApproved outline:\n${artifacts.outline}\n\nDevelop the full cast and their voices. Use web search for any real/known figures.`);
+
+    artifacts.prose = await pass("prose",
+      `User request:\n${userText}\n\nOutline:\n${artifacts.outline}\n\nCharacter voices:\n${artifacts.cast}\n\nWrite the prose draft now.`);
+
+    // Final pass — render as the main visible answer
+    const polishCfg = roomStage("polish");
+    const finalStage = makeStageBlock(slots, polishCfg.label, polishCfg.badge);
+    let fThink = null;
+    if (state.streamThink) fThink = makeThinkBlockIn(finalStage.inner, "Thinking…");
+    finalStage.d.open = true;
+    const finalOut = makeContentBlock(slots); // top-level, prominent
+    const finalMsgs = [
+      { role: "system", content: baseSys + polishCfg.sys },
+      { role: "user", content:
+        `User request:\n${userText}\n\nOutline:\n${artifacts.outline}\n\nCharacter voices:\n${artifacts.cast}\n\nProse draft:\n${artifacts.prose}\n\nDeliver the final polished piece.` },
+    ];
+    const { content: finalText } = await streamGLM({
+      messages: finalMsgs, webSearch: state.webSearch,
+      onThink: (t) => { if (!fThink) fThink = makeThinkBlockIn(finalStage.inner, "Thinking…"); fThink.append(t); },
+      onContent: (t) => finalOut.append(t),
+      signal: currentAbort.signal,
+    });
+    if (fThink) { fThink.done("Thought process"); fThink.hideIfEmpty(); }
+    finalStage.done();
+    finalOut.done();
+
+    // Save a compact record to history so follow-ups have context
+    messages().push({ role: "assistant", content: finalText ||
+      "*(Writing Room produced no final text.)*" });
+    touchChat();
+  } catch (err) {
+    if (err.name === "AbortError") { showError(slots, "Writing Room stopped."); }
+    else { showError(slots, err.message); }
+    throw err;
+  }
+}
+
+/* Variants of think/content builders that append into an arbitrary parent */
+function makeThinkBlockIn(parent, label) {
+  const d = document.createElement("details");
+  d.className = "think"; d.open = true;
+  d.innerHTML = `<summary><span class="ico spin">⟳</span> <span class="t">${label}</span></summary><div class="inner"></div>`;
+  parent.appendChild(d);
+  const inner = d.querySelector(".inner");
+  return {
+    append(t) { inner.textContent += t; scrollToBottom(); },
+    done(l) { d.querySelector(".ico").className = "ico"; d.querySelector(".ico").textContent = "✓"; d.querySelector(".t").textContent = l || "Thought process"; d.open = false; },
+    hideIfEmpty() { if (!inner.textContent.trim()) d.remove(); }
+  };
+}
+function makeContentBlockIn(parent) {
+  const c = document.createElement("div");
+  c.className = "content cursor";
+  parent.appendChild(c);
+  let raw = "";
+  return {
+    append(t) { raw += t; c.innerHTML = renderMd(raw); c.classList.add("cursor"); scrollToBottom(); },
+    done() { c.classList.remove("cursor"); c.innerHTML = renderMd(raw); },
+    get text() { return raw; }
+  };
+}
+
+/* =================================================================
+   Send orchestration
+================================================================= */
+let busy = false;
+function setBusy(b) {
+  busy = b;
+  el.send.classList.toggle("stop", b);
+  el.send.textContent = b ? "■" : "➤";
+  el.send.title = b ? "Stop" : "Send";
+}
+
+async function onSend() {
+  if (busy) { if (currentAbort) currentAbort.abort(); return; }
+  const text = el.input.value.trim();
+  if (!text) return;
+  if (!state.apiKey) { alert("Add your Z.ai API key in the sidebar first."); el.apiKey.focus(); return; }
+
+  el.input.value = ""; autoGrow();
+  addUserMessage(text);
+  messages().push({ role: "user", content: text });
+  touchChat();
+
+  currentAbort = new AbortController();
+  setBusy(true);
+  try {
+    if (state.writingRoom) await runWritingRoom(text);
+    else await runNormal(text);
+  } catch (_) { /* surfaced inline */ }
+  finally { setBusy(false); currentAbort = null; }
+}
+el.send.onclick = onSend;
+
+/* =================================================================
+   Boot
+================================================================= */
+syncControls();
+renderPrompts();
+renderRoomEditors();
+renderRoomPresets();
+currentChat();      // ensure at least one chat exists
+renderChatList();
+renderChat();
+autoGrow();
+</script>
+</body>
+</html>
