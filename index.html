@@ -327,6 +327,19 @@
       </div>
     </div>
 
+    <!-- Writing Room stage prompts -->
+    <div class="section">
+      <h2>Writing Room prompts</h2>
+      <div style="font-size:11px;color:var(--text-dim);margin:-4px 0 10px;">Customise each stage's system prompt. Save a set as a preset to load later.</div>
+      <div id="roomPromptEditors"></div>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn sm" id="resetRoomPrompts">Reset to defaults</button>
+        <button class="btn primary sm" id="saveRoomPreset">Save as preset</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Saved presets — click to load:</div>
+      <div class="prompt-list" id="roomPresetList"></div>
+    </div>
+
     <div class="section">
       <button class="btn danger sm" id="clearChat" style="width:100%">Clear conversation</button>
     </div>
@@ -389,6 +402,8 @@ const state = {
   webSearch: LS.get("gamma.webSearch", false),
   writingRoom: LS.get("gamma.writingRoom", false),
   streamThink: LS.get("gamma.streamThink", true),
+  roomPrompts: LS.get("gamma.roomPrompts", {}),   // {outline,cast,prose,polish} live stage prompts
+  roomPresets: LS.get("gamma.roomPresets", []),   // [{id,name,prompts:{...}}]
   chats: LS.get("gamma.chats", []),               // [{id,title,messages:[{role,content}],updatedAt}]
   currentChatId: LS.get("gamma.currentChatId", null),
 };
@@ -407,6 +422,8 @@ const el = {
   promptList: $("promptList"), promptName: $("promptName"), promptBody: $("promptBody"),
   savePrompt: $("savePrompt"), newPrompt: $("newPrompt"),
   webSearch: $("webSearch"), writingRoom: $("writingRoom"), streamThink: $("streamThink"),
+  roomPromptEditors: $("roomPromptEditors"), resetRoomPrompts: $("resetRoomPrompts"),
+  saveRoomPreset: $("saveRoomPreset"), roomPresetList: $("roomPresetList"),
   clearChat: $("clearChat"),
   messages: $("messages"), empty: $("empty"),
   input: $("input"), send: $("send"),
@@ -652,6 +669,73 @@ async function openChatFromFile() {
     alert("Could not open file: " + e.message);
   }
 }
+
+/* =================================================================
+   Writing Room stage prompts (editable + savable presets)
+================================================================= */
+function roomPromptVal(key) { return state.roomPrompts[key] || ROOM_DEFAULTS[key].sys; }
+
+function renderRoomEditors() {
+  el.roomPromptEditors.innerHTML = "";
+  ROOM_KEYS.forEach(key => {
+    const def = ROOM_DEFAULTS[key];
+    const wrap = document.createElement("label");
+    wrap.className = "field";
+    wrap.innerHTML = `<span>${def.label}${def.web ? " · web 🔎" : ""}</span>`;
+    const ta = document.createElement("textarea");
+    ta.style.minHeight = "72px";
+    ta.value = roomPromptVal(key);
+    ta.oninput = () => { state.roomPrompts[key] = ta.value; LS.set("gamma.roomPrompts", state.roomPrompts); };
+    wrap.appendChild(ta);
+    el.roomPromptEditors.appendChild(wrap);
+  });
+}
+
+function renderRoomPresets() {
+  el.roomPresetList.innerHTML = "";
+  if (!state.roomPresets.length) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;color:var(--text-dim);padding:2px;";
+    d.textContent = "No presets saved yet.";
+    el.roomPresetList.appendChild(d);
+    return;
+  }
+  state.roomPresets.forEach(p => {
+    const row = document.createElement("div");
+    row.className = "prompt-item";
+    row.innerHTML = `<span class="name">${escapeHtml(p.name)}</span><span class="x" title="Delete">✕</span>`;
+    row.querySelector(".name").onclick = () => {
+      state.roomPrompts = Object.assign({}, p.prompts);
+      LS.set("gamma.roomPrompts", state.roomPrompts);
+      renderRoomEditors();
+    };
+    row.querySelector(".x").onclick = (e) => {
+      e.stopPropagation();
+      state.roomPresets = state.roomPresets.filter(x => x.id !== p.id);
+      LS.set("gamma.roomPresets", state.roomPresets);
+      renderRoomPresets();
+    };
+    el.roomPresetList.appendChild(row);
+  });
+}
+
+el.resetRoomPrompts.onclick = () => {
+  if (!confirm("Reset all four stage prompts to their defaults?")) return;
+  state.roomPrompts = {};
+  LS.set("gamma.roomPrompts", state.roomPrompts);
+  renderRoomEditors();
+};
+el.saveRoomPreset.onclick = () => {
+  const name = prompt("Name this Writing Room preset:");
+  if (!name || !name.trim()) return;
+  const prompts = {};
+  ROOM_KEYS.forEach(k => prompts[k] = roomPromptVal(k));
+  const existing = state.roomPresets.find(p => p.name === name.trim());
+  if (existing) existing.prompts = prompts;
+  else state.roomPresets.push({ id: "rp_" + Date.now().toString(36), name: name.trim(), prompts });
+  LS.set("gamma.roomPresets", state.roomPresets);
+  renderRoomPresets();
+};
 
 /* ---- System prompt list ---- */
 function renderPrompts() {
@@ -962,7 +1046,8 @@ async function runNormal(userText) {
    Writing Room — 4-pass pipeline
    1) Outline   2) Characters/roleplay (web search)   3) Prose   4) Final polish
 ================================================================= */
-const ROOM = {
+const ROOM_KEYS = ["outline", "cast", "prose", "polish"];
+const ROOM_DEFAULTS = {
   outline: {
     label: "Pass 1 · Outline", badge: "architect",
     sys: "You are the STORY ARCHITECT in a collaborative writing room. Produce a tight, vivid outline for the user's request: premise, setting, central tension, a beat-by-beat structure, and the intended tone/POV. Be concrete and economical. Output Markdown.",
@@ -981,6 +1066,11 @@ const ROOM = {
     sys: "You are the SHOWRUNNER/EDITOR who brings everything together. Take the outline, the cast voices, and the prose draft, and deliver the FINAL polished piece for the reader: tighten prose, ensure continuity and consistent voices, fix pacing, and present a clean finished result. Output only the finished piece in Markdown (no meta-commentary).",
   },
 };
+// Returns the live config for a stage: defaults (label/badge/web) + the user's
+// current (possibly edited) system prompt text.
+function roomStage(key) {
+  return Object.assign({}, ROOM_DEFAULTS[key], { sys: state.roomPrompts[key] || ROOM_DEFAULTS[key].sys });
+}
 
 async function runWritingRoom(userText) {
   const { slots } = addAssistantMessage();
@@ -989,7 +1079,7 @@ async function runWritingRoom(userText) {
   const artifacts = {};
 
   async function pass(key, contextText) {
-    const cfg = ROOM[key];
+    const cfg = roomStage(key);
     const stage = makeStageBlock(slots, cfg.label, cfg.badge);
     let think = null;
     if (state.streamThink) think = makeThinkBlockIn(stage.inner, "Thinking…");
@@ -1023,13 +1113,14 @@ async function runWritingRoom(userText) {
       `User request:\n${userText}\n\nOutline:\n${artifacts.outline}\n\nCharacter voices:\n${artifacts.cast}\n\nWrite the prose draft now.`);
 
     // Final pass — render as the main visible answer
-    const finalStage = makeStageBlock(slots, "Pass 4 · Final cut", ROOM.polish.badge);
+    const polishCfg = roomStage("polish");
+    const finalStage = makeStageBlock(slots, polishCfg.label, polishCfg.badge);
     let fThink = null;
     if (state.streamThink) fThink = makeThinkBlockIn(finalStage.inner, "Thinking…");
     finalStage.d.open = true;
     const finalOut = makeContentBlock(slots); // top-level, prominent
     const finalMsgs = [
-      { role: "system", content: baseSys + ROOM.polish.sys },
+      { role: "system", content: baseSys + polishCfg.sys },
       { role: "user", content:
         `User request:\n${userText}\n\nOutline:\n${artifacts.outline}\n\nCharacter voices:\n${artifacts.cast}\n\nProse draft:\n${artifacts.prose}\n\nDeliver the final polished piece.` },
     ];
@@ -1116,6 +1207,8 @@ el.send.onclick = onSend;
 ================================================================= */
 syncControls();
 renderPrompts();
+renderRoomEditors();
+renderRoomPresets();
 currentChat();      // ensure at least one chat exists
 renderChatList();
 renderChat();
