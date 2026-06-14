@@ -338,6 +338,10 @@
       </div>
       <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Saved presets — click to load:</div>
       <div class="prompt-list" id="roomPresetList"></div>
+      <div class="btn-row">
+        <button class="btn sm" id="exportPresets" style="flex:1" title="Save all presets to a file you choose">⬆ Export presets</button>
+        <button class="btn sm" id="importPresets" style="flex:1" title="Load presets from a file">⬇ Import presets</button>
+      </div>
     </div>
 
     <div class="section">
@@ -424,6 +428,7 @@ const el = {
   webSearch: $("webSearch"), writingRoom: $("writingRoom"), streamThink: $("streamThink"),
   roomPromptEditors: $("roomPromptEditors"), resetRoomPrompts: $("resetRoomPrompts"),
   saveRoomPreset: $("saveRoomPreset"), roomPresetList: $("roomPresetList"),
+  exportPresets: $("exportPresets"), importPresets: $("importPresets"),
   clearChat: $("clearChat"),
   messages: $("messages"), empty: $("empty"),
   input: $("input"), send: $("send"),
@@ -735,6 +740,69 @@ el.saveRoomPreset.onclick = () => {
   else state.roomPresets.push({ id: "rp_" + Date.now().toString(36), name: name.trim(), prompts });
   LS.set("gamma.roomPresets", state.roomPresets);
   renderRoomPresets();
+};
+
+/* Reusable file pickers (used for preset export/import) */
+async function saveBlobAs(blob, suggestedName) {
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
+      });
+      const w = await handle.createWritable(); await w.write(blob); await w.close();
+      return true;
+    } catch (e) { if (e && e.name === "AbortError") return false; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = suggestedName; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
+}
+async function pickFileText() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [h] = await window.showOpenFilePicker({ types: [{ description: "JSON", accept: { "application/json": [".json"] } }] });
+      return await (await h.getFile()).text();
+    } catch (e) { if (e && e.name === "AbortError") return null; }
+  }
+  return await new Promise((resolve) => {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".json,application/json";
+    inp.onchange = () => { const f = inp.files[0]; if (!f) return resolve(null); const r = new FileReader(); r.onload = () => resolve(r.result); r.readAsText(f); };
+    inp.click();
+  });
+}
+
+el.exportPresets.onclick = async () => {
+  if (!state.roomPresets.length) { alert("No presets to export yet — save one first."); return; }
+  const blob = new Blob([JSON.stringify({
+    app: "gamma", kind: "room-presets", version: 1,
+    exportedAt: new Date().toISOString(), presets: state.roomPresets,
+  }, null, 2)], { type: "application/json" });
+  await saveBlobAs(blob, "gamma-room-presets.json");
+};
+el.importPresets.onclick = async () => {
+  const text = await pickFileText();
+  if (text === null) return;
+  try {
+    const data = JSON.parse(text);
+    const incoming = Array.isArray(data.presets) ? data.presets : (Array.isArray(data) ? data : null);
+    if (!incoming) throw new Error("Not a Gamma presets file.");
+    let added = 0;
+    incoming.forEach(p => {
+      if (!p || !p.name || !p.prompts) return;
+      const prompts = {};
+      ROOM_KEYS.forEach(k => { if (typeof p.prompts[k] === "string") prompts[k] = p.prompts[k]; });
+      const exists = state.roomPresets.find(x => x.name === String(p.name));
+      if (exists) exists.prompts = prompts;
+      else state.roomPresets.push({ id: "rp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: String(p.name), prompts });
+      added++;
+    });
+    LS.set("gamma.roomPresets", state.roomPresets);
+    renderRoomPresets();
+    alert("Imported " + added + " preset(s).");
+  } catch (e) { alert("Could not import: " + e.message); }
 };
 
 /* ---- System prompt list ---- */
