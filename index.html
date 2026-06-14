@@ -247,6 +247,17 @@
       </div>
     </div>
 
+    <!-- Chats -->
+    <div class="section">
+      <h2>Chats</h2>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn primary sm" id="newChat" style="flex:1">+ New chat</button>
+        <button class="btn sm" id="saveChatFile" title="Save current chat to a file you choose">💾 Save</button>
+        <button class="btn sm" id="openChatFile" title="Open a chat file from disk">📂 Open</button>
+      </div>
+      <div class="prompt-list" id="chatList"></div>
+    </div>
+
     <!-- Connection -->
     <div class="section">
       <h2>Connection</h2>
@@ -378,8 +389,13 @@ const state = {
   webSearch: LS.get("gamma.webSearch", false),
   writingRoom: LS.get("gamma.writingRoom", false),
   streamThink: LS.get("gamma.streamThink", true),
-  messages: [],                                   // chat history [{role, content}]
+  chats: LS.get("gamma.chats", []),               // [{id,title,messages:[{role,content}],updatedAt}]
+  currentChatId: LS.get("gamma.currentChatId", null),
 };
+
+// In-memory file handles (File System Access API) per chat id, so re-saving
+// goes back to the same file the user picked. Not serialisable -> not persisted.
+const fileHandles = new Map();
 
 /* =================================================================
    Element refs
@@ -387,6 +403,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const el = {
   apiKey: $("apiKey"), modelId: $("modelId"), baseUrl: $("baseUrl"), planSelect: $("planSelect"),
+  newChat: $("newChat"), saveChatFile: $("saveChatFile"), openChatFile: $("openChatFile"), chatList: $("chatList"),
   promptList: $("promptList"), promptName: $("promptName"), promptBody: $("promptBody"),
   savePrompt: $("savePrompt"), newPrompt: $("newPrompt"),
   webSearch: $("webSearch"), writingRoom: $("writingRoom"), streamThink: $("streamThink"),
@@ -435,6 +452,205 @@ function syncControls() {
 
 function activePromptObj() {
   return state.prompts.find(p => p.id === state.activePrompt) || null;
+}
+
+/* =================================================================
+   Chat sessions (local, multi-conversation)
+================================================================= */
+function saveChats() { LS.set("gamma.chats", state.chats); LS.set("gamma.currentChatId", state.currentChatId); }
+
+function currentChat() {
+  let c = state.chats.find(x => x.id === state.currentChatId);
+  if (!c) {
+    c = { id: "c_" + Date.now().toString(36), title: "New chat", messages: [], updatedAt: Date.now() };
+    state.chats.unshift(c);
+    state.currentChatId = c.id;
+    saveChats();
+  }
+  return c;
+}
+function messages() { return currentChat().messages; }
+
+function titleFor(chat) {
+  if (chat.title && chat.title !== "New chat") return chat.title;
+  const firstUser = chat.messages.find(m => m.role === "user");
+  if (firstUser) return firstUser.content.replace(/\s+/g, " ").slice(0, 42);
+  return "New chat";
+}
+
+function touchChat() {
+  const c = currentChat();
+  c.updatedAt = Date.now();
+  c.title = titleFor(c);
+  // keep most-recent first
+  state.chats.sort((a, b) => b.updatedAt - a.updatedAt);
+  saveChats();
+  renderChatList();
+}
+
+function newChat() {
+  const c = { id: "c_" + Date.now().toString(36), title: "New chat", messages: [], updatedAt: Date.now() };
+  state.chats.unshift(c);
+  state.currentChatId = c.id;
+  saveChats();
+  renderChat();
+  renderChatList();
+  el.input.focus();
+}
+
+function switchChat(id) {
+  if (busy) { alert("Wait for the current response to finish first."); return; }
+  state.currentChatId = id;
+  saveChats();
+  renderChat();
+  renderChatList();
+}
+
+function deleteChat(id) {
+  state.chats = state.chats.filter(c => c.id !== id);
+  fileHandles.delete(id);
+  if (state.currentChatId === id) state.currentChatId = state.chats[0] ? state.chats[0].id : null;
+  saveChats();
+  renderChat();
+  renderChatList();
+}
+
+function renameChat(id) {
+  const c = state.chats.find(x => x.id === id);
+  if (!c) return;
+  const name = prompt("Rename chat:", c.title);
+  if (name && name.trim()) { c.title = name.trim(); saveChats(); renderChatList(); }
+}
+
+function renderChatList() {
+  el.chatList.innerHTML = "";
+  if (!state.chats.length) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;color:var(--text-dim);padding:4px 2px;";
+    d.textContent = "No chats yet.";
+    el.chatList.appendChild(d);
+    return;
+  }
+  state.chats.forEach(c => {
+    const row = document.createElement("div");
+    row.className = "prompt-item" + (c.id === state.currentChatId ? " active" : "");
+    const hasFile = fileHandles.has(c.id) ? " 💾" : "";
+    row.innerHTML = `<span class="name">${escapeHtml(titleFor(c))}${hasFile}</span>
+      <span class="x" title="Rename" data-act="rename">✎</span>
+      <span class="x" title="Delete" data-act="del">✕</span>`;
+    row.querySelector(".name").onclick = () => switchChat(c.id);
+    row.querySelector('[data-act="rename"]').onclick = (e) => { e.stopPropagation(); renameChat(c.id); };
+    row.querySelector('[data-act="del"]').onclick = (e) => {
+      e.stopPropagation();
+      if (confirm("Delete this chat?")) deleteChat(c.id);
+    };
+    el.chatList.appendChild(row);
+  });
+}
+
+/** Rebuild the message pane from the active chat's stored messages. */
+function renderChat() {
+  el.messages.innerHTML = "";
+  el.messages.appendChild(el.empty);
+  const msgs = messages();
+  if (!msgs.length) { el.empty.style.display = ""; return; }
+  el.empty.style.display = "none";
+  for (const m of msgs) {
+    if (m.role === "user") addUserMessage(m.content);
+    else addStaticAssistant(m.content);
+  }
+  scrollToBottom();
+}
+
+/* =================================================================
+   File save / load — user picks WHERE
+================================================================= */
+function chatToBlob(chat) {
+  return new Blob([JSON.stringify({
+    app: "gamma", version: 1, exportedAt: new Date().toISOString(),
+    title: titleFor(chat), messages: chat.messages
+  }, null, 2)], { type: "application/json" });
+}
+
+async function saveChatToFile() {
+  const chat = currentChat();
+  if (!chat.messages.length) { alert("This chat is empty."); return; }
+  const blob = chatToBlob(chat);
+  const fname = (titleFor(chat).replace(/[^\w\- ]+/g, "").trim() || "gamma-chat").slice(0, 40) + ".json";
+  // Preferred: File System Access API -> user picks location, reusable handle
+  if (window.showSaveFilePicker) {
+    try {
+      let handle = fileHandles.get(chat.id);
+      if (!handle) {
+        handle = await window.showSaveFilePicker({
+          suggestedName: fname,
+          types: [{ description: "Gamma chat", accept: { "application/json": [".json"] } }],
+        });
+        fileHandles.set(chat.id, handle);
+      }
+      const w = await handle.createWritable();
+      await w.write(blob); await w.close();
+      renderChatList();
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // user cancelled
+      // otherwise fall through to download
+    }
+  }
+  // Fallback: trigger a download (browser decides/asks where)
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = fname; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function openChatFromFile() {
+  let text = null, handle = null;
+  if (window.showOpenFilePicker) {
+    try {
+      const [h] = await window.showOpenFilePicker({
+        types: [{ description: "Gamma chat", accept: { "application/json": [".json"] } }],
+      });
+      handle = h;
+      const file = await h.getFile();
+      text = await file.text();
+    } catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  if (text === null) {
+    // Fallback: hidden file input
+    text = await new Promise((resolve) => {
+      const inp = document.createElement("input");
+      inp.type = "file"; inp.accept = ".json,application/json";
+      inp.onchange = () => {
+        const f = inp.files[0];
+        if (!f) return resolve(null);
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.readAsText(f);
+      };
+      inp.click();
+    });
+    if (text === null) return;
+  }
+  try {
+    const data = JSON.parse(text);
+    const msgs = Array.isArray(data.messages) ? data.messages : null;
+    if (!msgs) throw new Error("Not a valid Gamma chat file.");
+    const chat = {
+      id: "c_" + Date.now().toString(36),
+      title: data.title || "Imported chat",
+      messages: msgs.filter(m => m && m.role && typeof m.content === "string"),
+      updatedAt: Date.now(),
+    };
+    state.chats.unshift(chat);
+    state.currentChatId = chat.id;
+    if (handle) fileHandles.set(chat.id, handle);
+    saveChats();
+    renderChat();
+    renderChatList();
+  } catch (e) {
+    alert("Could not open file: " + e.message);
+  }
 }
 
 /* ---- System prompt list ---- */
@@ -506,13 +722,19 @@ el.savePrompt.onclick = () => {
 el.newPrompt.onclick = () => { el.promptName.value = ""; el.promptBody.value = ""; el.promptName.focus(); };
 
 el.clearChat.onclick = () => {
-  if (!state.messages.length || confirm("Clear the whole conversation?")) {
-    state.messages = [];
-    el.messages.innerHTML = "";
-    el.messages.appendChild(el.empty);
-    el.empty.style.display = "";
+  const c = currentChat();
+  if (!c.messages.length || confirm("Clear messages in this chat?")) {
+    c.messages = [];
+    c.title = "New chat";
+    saveChats();
+    renderChat();
+    renderChatList();
   }
 };
+
+el.newChat.onclick = newChat;
+el.saveChatFile.onclick = saveChatToFile;
+el.openChatFile.onclick = openChatFromFile;
 
 /* mobile menu */
 el.menuBtn.onclick = () => { el.sidebar.classList.add("open"); el.scrim.classList.add("show"); };
@@ -559,6 +781,19 @@ function addAssistantMessage() {
   el.messages.appendChild(wrap);
   scrollToBottom();
   return { wrap, slots };
+}
+
+/** Renders a finished assistant message (used when loading saved chats). */
+function addStaticAssistant(text) {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar bot">Γ</div>
+      <div class="body"><div class="who">GLM-5.2</div><div class="content"></div></div>
+    </div>`;
+  wrap.querySelector(".content").innerHTML = renderMd(text);
+  el.messages.appendChild(wrap);
 }
 
 /** A collapsible thinking block. */
@@ -693,7 +928,7 @@ function buildMessages(extraSystem) {
   const ap = activePromptObj();
   const sys = [ap ? ap.body : "", extraSystem || ""].filter(Boolean).join("\n\n");
   if (sys) msgs.push({ role: "system", content: sys });
-  for (const m of state.messages) msgs.push({ role: m.role, content: m.content });
+  for (const m of messages()) msgs.push({ role: m.role, content: m.content });
   return msgs;
 }
 
@@ -713,7 +948,8 @@ async function runNormal(userText) {
     });
     if (think) { think.done("Thought process"); think.hideIfEmpty(); }
     out.done();
-    state.messages.push({ role: "assistant", content: content || "*(no content returned)*" });
+    messages().push({ role: "assistant", content: content || "*(no content returned)*" });
+    touchChat();
   } catch (err) {
     if (think) think.hideIfEmpty();
     if (err.name === "AbortError") { out.append("\n\n_(stopped)_"); out.done(); }
@@ -808,8 +1044,9 @@ async function runWritingRoom(userText) {
     finalOut.done();
 
     // Save a compact record to history so follow-ups have context
-    state.messages.push({ role: "assistant", content: finalText ||
+    messages().push({ role: "assistant", content: finalText ||
       "*(Writing Room produced no final text.)*" });
+    touchChat();
   } catch (err) {
     if (err.name === "AbortError") { showError(slots, "Writing Room stopped."); }
     else { showError(slots, err.message); }
@@ -861,7 +1098,8 @@ async function onSend() {
 
   el.input.value = ""; autoGrow();
   addUserMessage(text);
-  state.messages.push({ role: "user", content: text });
+  messages().push({ role: "user", content: text });
+  touchChat();
 
   currentAbort = new AbortController();
   setBusy(true);
@@ -878,6 +1116,9 @@ el.send.onclick = onSend;
 ================================================================= */
 syncControls();
 renderPrompts();
+currentChat();      // ensure at least one chat exists
+renderChatList();
+renderChat();
 autoGrow();
 </script>
 </body>
