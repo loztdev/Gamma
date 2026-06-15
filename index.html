@@ -436,6 +436,11 @@ const el = {
   menuBtn: $("menuBtn"), sidebar: $("sidebar"), scrim: $("scrim"),
 };
 
+el.messages.addEventListener('scroll', () => {
+  const dist = el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight;
+  followAlong = dist < 80;
+}, { passive: true });
+
 /* =================================================================
    Markdown rendering (sanitised)
 ================================================================= */
@@ -905,9 +910,11 @@ el.input.addEventListener("keydown", (e) => {
 /* =================================================================
    DOM builders for chat
 ================================================================= */
-function scrollToBottom() { el.messages.scrollTop = el.messages.scrollHeight; }
+let followAlong = true;
+function scrollToBottom() { if (followAlong) el.messages.scrollTop = el.messages.scrollHeight; }
 
 function addUserMessage(text) {
+  followAlong = true;
   el.empty.style.display = "none";
   const wrap = document.createElement("div");
   wrap.className = "msg-wrap";
