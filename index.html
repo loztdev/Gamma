@@ -3,7 +3,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0c0e13" />
 <title>Gamma — GLM-5.2 Chat</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" />
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
@@ -122,8 +123,8 @@
   /* ---------- Main ---------- */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .topbar {
-    height: 52px; flex-shrink: 0; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; gap: 12px; padding: 0 18px;
+    height: calc(52px + env(safe-area-inset-top, 0px)); flex-shrink: 0; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; padding: env(safe-area-inset-top, 0px) 18px 0;
     background: rgba(18,21,28,.6); backdrop-filter: blur(6px);
   }
   .topbar .status { font-size: 12px; color: var(--text-dim); }
@@ -654,7 +655,7 @@ function renderChat() {
   for (const m of msgs) {
     if (m.role === "user") addUserMessage(m.content);
     else if (m.kind === "dream") addDreamMessage(m.content);
-    else if (m.kind === "memory") addMemoryMessage(m.content);
+    else if (m.kind === "memory") addMemoryMessage(m.content, m.reasoning);
     else addStaticAssistant(m.content);
   }
   scrollToBottom();
@@ -982,8 +983,41 @@ el.saveChatFile.onclick = saveChatToFile;
 el.openChatFile.onclick = openChatFromFile;
 
 /* mobile menu */
-el.menuBtn.onclick = () => { el.sidebar.classList.add("open"); el.scrim.classList.add("show"); };
-el.scrim.onclick = () => { el.sidebar.classList.remove("open"); el.scrim.classList.remove("show"); };
+function openSidebar() { el.sidebar.classList.add("open"); el.scrim.classList.add("show"); }
+function closeSidebar() { el.sidebar.classList.remove("open"); el.scrim.classList.remove("show"); }
+el.menuBtn.onclick = openSidebar;
+el.scrim.onclick = closeSidebar;
+
+/* swipe right to open the sidebar, swipe left to close it (mobile only) */
+(function setupSwipeNav() {
+  const SWIPE_THRESHOLD = 60;   // min horizontal travel to count as a swipe
+  const SWIPE_RESTRAINT = 75;   // max vertical drift allowed
+  let startX = 0, startY = 0, tracking = false;
+
+  function isMobile() { return window.innerWidth <= 780; }
+  // Don't hijack gestures meant for horizontally-scrollable content or text inputs.
+  function ignoreTarget(t) { return !!(t.closest && t.closest("pre, textarea, input, select")); }
+
+  document.addEventListener("touchstart", (e) => {
+    if (!isMobile() || e.touches.length !== 1) { tracking = false; return; }
+    if (ignoreTarget(e.target)) { tracking = false; return; }
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    tracking = true;
+  }, { passive: true });
+
+  document.addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    if (Math.abs(dy) > SWIPE_RESTRAINT) return;
+    const open = el.sidebar.classList.contains("open");
+    if (!open && dx > SWIPE_THRESHOLD) openSidebar();
+    else if (open && dx < -SWIPE_THRESHOLD) closeSidebar();
+  }, { passive: true });
+})();
 
 /* example chips */
 document.querySelectorAll(".ex").forEach(e => e.onclick = () => { el.input.value = e.textContent; autoGrow(); el.input.focus(); });
@@ -1601,17 +1635,26 @@ function parseMemories(text) {
     .filter(l => l.length > 3 && !/^json$/i.test(l));
 }
 
-/** Renders a finished memory note (used on reload and after curation). */
-function addMemoryMessage(text) {
+/** Renders a finished memory note (used on reload and after curation).
+ *  `reasoning`, when present, is the model's own deliberation about what was
+ *  worth keeping — kept attached to the note instead of being thrown away,
+ *  so the decision and its justification live in the same conversation. */
+function addMemoryMessage(text, reasoning) {
   el.empty.style.display = "none";
   const wrap = document.createElement("div");
   wrap.className = "msg-wrap";
+  const hasReasoning = reasoning && reasoning.trim();
+  const thinkHtml = hasReasoning
+    ? `<details class="think"><summary><span class="ico">✓</span> <span class="t">Reasoning</span></summary><div class="inner"></div></details>`
+    : "";
   wrap.innerHTML = `<div class="msg">
       <div class="avatar mem">🧠</div>
       <div class="body"><div class="who">Memory</div>
+        ${thinkHtml}
         <div class="memory-block"><span class="memory-tag">🧠 MEMORY</span><div class="content"></div></div>
       </div>
     </div>`;
+  if (hasReasoning) wrap.querySelector(".think .inner").textContent = reasoning.trim();
   wrap.querySelector(".content").innerHTML = renderMd(text);
   el.messages.appendChild(wrap);
 }
@@ -1649,7 +1692,7 @@ async function runRemember(hint) {
     `Decide what new memories, if any, are worth keeping.`;
 
   try {
-    const { content } = await streamGLM({
+    const { content, reasoning } = await streamGLM({
       messages: [{ role: "system", content: sys }, { role: "user", content: user }],
       webSearch: false,
       temperature: 0.3,
@@ -1675,8 +1718,8 @@ async function runRemember(hint) {
       ? "I'll remember:\n" + added.map(t => "- " + t).join("\n")
       : "Nothing new worth holding onto — my memory's unchanged.";
     wrap.remove();
-    addMemoryMessage(note);
-    messages().push({ role: "assistant", content: note, kind: "memory" });
+    addMemoryMessage(note, reasoning);
+    messages().push({ role: "assistant", content: note, kind: "memory", reasoning });
     touchChat();
   } catch (err) {
     if (think) think.hideIfEmpty();
