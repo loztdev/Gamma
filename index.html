@@ -1254,11 +1254,160 @@ function addMsgActions(wrap, role) {
 }
 
 /* =================================================================
+   Z.ai live web search
+   The chat-completions "web_search" tool is silently ignored on some
+   plans/endpoints (no error — the model just answers without searching).
+   Z.ai actually exposes search through a hosted "Web Search Prime" MCP
+   server (JSON-RPC 2.0 over the MCP Streamable HTTP transport), so Gamma
+   speaks MCP to it directly and feeds the results to the model as
+   grounding context.
+================================================================= */
+const MCP_WEB_SEARCH_URL = "https://api.z.ai/api/mcp/web_search_prime/mcp";
+
+/** One MCP JSON-RPC round trip. Response may come back as plain JSON or as
+ *  an SSE stream of JSON-RPC messages (per the Streamable HTTP transport). */
+async function mcpRequest(sessionId, payload, { signal } = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    "Authorization": "Bearer " + state.apiKey,
+  };
+  if (sessionId) headers["Mcp-Session-Id"] = sessionId;
+  const res = await fetch(MCP_WEB_SEARCH_URL, { method: "POST", headers, body: JSON.stringify(payload), signal });
+  const newSessionId = res.headers.get("Mcp-Session-Id") || sessionId;
+  if (!res.ok) {
+    let detail = "";
+    try { detail = await res.text(); } catch {}
+    throw new Error(`MCP error ${res.status}: ${detail.slice(0, 300) || res.statusText}`);
+  }
+  const raw = await res.text();
+  const messages = [];
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (t.startsWith("data:")) { try { messages.push(JSON.parse(t.slice(5).trim())); } catch {} }
+  }
+  if (!messages.length && raw.trim()) { try { messages.push(JSON.parse(raw.trim())); } catch {} }
+  const match = ("id" in payload) ? messages.find(m => m.id === payload.id) : messages[0];
+  return { message: match || messages[messages.length - 1], sessionId: newSessionId };
+}
+
+/** Turns the tool's text content (JSON results, or freeform text) into {title,link,content}[]. */
+function parseMcpSearchResults(text) {
+  if (!text) return [];
+  const trimmed = text.trim();
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try {
+      const data = JSON.parse(trimmed);
+      const arr = Array.isArray(data) ? data : (data.results || data.search_result || data.data || []);
+      const mapped = arr.map(r => ({
+        title: (r.title || r.name || "Untitled").trim(),
+        link: r.link || r.url || "",
+        content: (r.content || r.summary || r.snippet || "").trim(),
+      })).filter(r => r.title || r.content).slice(0, 5);
+      if (mapped.length) return mapped;
+    } catch {}
+  }
+  // Fallback: the tool returned a pre-formatted text blob — keep it whole rather than losing it.
+  return [{ title: "Web search results", link: "", content: trimmed }];
+}
+
+async function webSearchLookup(query, { signal } = {}) {
+  const init = await mcpRequest(null, {
+    jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "gamma", version: "1.0" } },
+  }, { signal });
+  if (init.message && init.message.error) throw new Error("MCP initialize failed: " + init.message.error.message);
+  const sessionId = init.sessionId;
+
+  try { await mcpRequest(sessionId, { jsonrpc: "2.0", method: "notifications/initialized" }, { signal }); } catch {}
+
+  // Discover the search tool's argument name instead of guessing it.
+  let toolName = "webSearchPrime", argKey = "query";
+  try {
+    const list = await mcpRequest(sessionId, { jsonrpc: "2.0", id: 2, method: "tools/list" }, { signal });
+    const tools = (list.message && list.message.result && list.message.result.tools) || [];
+    const tool = tools.find(t => /web.?search/i.test(t.name)) || tools[0];
+    if (tool) {
+      toolName = tool.name;
+      const props = tool.inputSchema && tool.inputSchema.properties ? Object.keys(tool.inputSchema.properties) : [];
+      if (props.length) argKey = props.includes("query") ? "query" : props[0];
+    }
+  } catch {}
+
+  const call = await mcpRequest(sessionId, {
+    jsonrpc: "2.0", id: 3, method: "tools/call",
+    params: { name: toolName, arguments: { [argKey]: query.slice(0, 300) } },
+  }, { signal });
+  if (call.message && call.message.error) throw new Error(call.message.error.message || "Web search tool call failed.");
+  const content = (call.message && call.message.result && call.message.result.content) || [];
+  const text = content.filter(c => c.type === "text").map(c => c.text).join("\n");
+  return parseMcpSearchResults(text);
+}
+
+function webResultsToContext(query, results) {
+  if (!results.length) return "";
+  const lines = results.map((r, i) =>
+    `${i + 1}. ${r.title}${r.link ? " — " + r.link : ""}\n${r.content}`.trim()).join("\n\n");
+  return `## Live web search results for: "${query}"\n${lines}\n\n` +
+    "Ground your answer in these results where relevant, and mention sources by name/URL when you draw on them. " +
+    "If they don't cover the question, say so and answer from general knowledge.";
+}
+
+/** Collapsible block showing search progress, then result links. */
+function makeSearchBlock(parent, query) {
+  const d = document.createElement("details");
+  d.className = "think";
+  d.open = true;
+  d.innerHTML = `<summary><span class="ico spin">⟳</span> <span class="t">Searching the web — "${escapeHtml(query)}"</span></summary><div class="inner"></div>`;
+  parent.appendChild(d);
+  const inner = d.querySelector(".inner");
+  return {
+    done(results) {
+      d.querySelector(".ico").className = "ico";
+      d.querySelector(".ico").textContent = results.length ? "🔎" : "⚠";
+      d.querySelector(".t").textContent = results.length
+        ? `Searched the web · ${results.length} result${results.length === 1 ? "" : "s"}`
+        : "Web search returned no results";
+      if (results.length) {
+        inner.style.whiteSpace = "normal";
+        inner.style.fontFamily = "var(--sans)";
+        inner.innerHTML = renderMd(results.map((r, i) =>
+          `${i + 1}. ${r.link ? `[${r.title}](${r.link})` : escapeHtml(r.title)}`).join("\n"));
+      }
+      d.open = false;
+    },
+    fail(msg) {
+      d.querySelector(".ico").className = "ico";
+      d.querySelector(".ico").textContent = "⚠";
+      d.querySelector(".t").textContent = "Web search failed — answering without it";
+      inner.textContent = msg;
+      d.open = false;
+    }
+  };
+}
+
+/** Runs a live search (if enabled) and returns extra system-prompt context, "" otherwise. */
+async function maybeWebSearch(parent, query, enabled, signal) {
+  if (!enabled || !query || !query.trim()) return "";
+  const label = query.length > 140 ? query.slice(0, 140) + "…" : query;
+  const ui = makeSearchBlock(parent, label);
+  try {
+    const results = await webSearchLookup(query, { signal });
+    ui.done(results);
+    return webResultsToContext(query, results);
+  } catch (err) {
+    if (err.name === "AbortError") { ui.fail("Stopped."); throw err; }
+    ui.fail(err.message);
+    return "";
+  }
+}
+
+/* =================================================================
    Z.ai GLM streaming call
    Yields {type:'thinking'|'content', text} via onDelta callback.
    Returns {content, reasoning}.
 ================================================================= */
-async function streamGLM({ messages, webSearch, onThink, onContent, signal, temperature }) {
+async function streamGLM({ messages, onThink, onContent, signal, temperature }) {
   if (!state.apiKey) throw new Error("Add your Z.ai API key in the sidebar first.");
 
   const body = {
@@ -1268,12 +1417,6 @@ async function streamGLM({ messages, webSearch, onThink, onContent, signal, temp
     thinking: { type: "enabled" },
   };
   if (typeof temperature === "number") body.temperature = temperature;
-  if (webSearch) {
-    body.tools = [{
-      type: "web_search",
-      web_search: { enable: true, search_engine: "search_std", search_result: true }
-    }];
-  }
 
   const res = await fetch(state.baseUrl, {
     method: "POST",
@@ -1348,14 +1491,14 @@ function memoryBlock() {
 
 async function runNormal(userText) {
   const { wrap, slots } = addAssistantMessage();
+  const extraSystem = await maybeWebSearch(slots, userText, state.webSearch, currentAbort.signal);
   let think = null;
   if (state.streamThink) think = makeThinkBlock(slots, "Thinking…");
   const out = makeContentBlock(slots);
 
   try {
     const { content } = await streamGLM({
-      messages: buildMessages(),
-      webSearch: state.webSearch,
+      messages: buildMessages(extraSystem),
       onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
       onContent: (t) => out.append(t),
       signal: currentAbort.signal,
@@ -1412,17 +1555,18 @@ async function runWritingRoom(userText) {
   async function pass(key, contextText) {
     const cfg = roomStage(key);
     const stage = makeStageBlock(slots, cfg.label, cfg.badge);
+    const useWeb = state.webSearch || !!cfg.web;
+    const extraSystem = await maybeWebSearch(stage.inner, contextText, useWeb, currentAbort.signal);
     let think = null;
     if (state.streamThink) think = makeThinkBlockIn(stage.inner, "Thinking…");
     const out = makeContentBlockIn(stage.inner);
 
     const messages = [
-      { role: "system", content: baseSys + cfg.sys },
+      { role: "system", content: baseSys + cfg.sys + (extraSystem ? "\n\n" + extraSystem : "") },
       { role: "user", content: contextText },
     ];
-    const useWeb = state.webSearch || !!cfg.web;
     const { content } = await streamGLM({
-      messages, webSearch: useWeb,
+      messages,
       onThink: (t) => { if (!think) think = makeThinkBlockIn(stage.inner, "Thinking…"); think.append(t); },
       onContent: (t) => out.append(t),
       signal: currentAbort.signal,
@@ -1446,17 +1590,18 @@ async function runWritingRoom(userText) {
     // Final pass — render as the main visible answer
     const polishCfg = roomStage("polish");
     const finalStage = makeStageBlock(slots, polishCfg.label, polishCfg.badge);
+    const finalExtraSystem = await maybeWebSearch(finalStage.inner, userText, state.webSearch, currentAbort.signal);
     let fThink = null;
     if (state.streamThink) fThink = makeThinkBlockIn(finalStage.inner, "Thinking…");
     finalStage.d.open = true;
     const finalOut = makeContentBlock(slots); // top-level, prominent
     const finalMsgs = [
-      { role: "system", content: baseSys + polishCfg.sys },
+      { role: "system", content: baseSys + polishCfg.sys + (finalExtraSystem ? "\n\n" + finalExtraSystem : "") },
       { role: "user", content:
         `User request:\n${userText}\n\nOutline:\n${artifacts.outline}\n\nCharacter voices:\n${artifacts.cast}\n\nProse draft:\n${artifacts.prose}\n\nDeliver the final polished piece.` },
     ];
     const { content: finalText } = await streamGLM({
-      messages: finalMsgs, webSearch: state.webSearch,
+      messages: finalMsgs,
       onThink: (t) => { if (!fThink) fThink = makeThinkBlockIn(finalStage.inner, "Thinking…"); fThink.append(t); },
       onContent: (t) => finalOut.append(t),
       signal: currentAbort.signal,
@@ -1564,7 +1709,6 @@ async function runDream(seed, { auto } = {}) {
   try {
     const { content } = await streamGLM({
       messages: [{ role: "system", content: sys }, { role: "user", content: user }],
-      webSearch: false,
       temperature: DREAM_TEMPERATURE,
       onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Drifting…"); think.append(t); },
       onContent: (t) => out.append(t),
@@ -1694,7 +1838,6 @@ async function runRemember(hint) {
   try {
     const { content, reasoning } = await streamGLM({
       messages: [{ role: "system", content: sys }, { role: "user", content: user }],
-      webSearch: false,
       temperature: 0.3,
       onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Reflecting…"); think.append(t); },
       onContent: () => {},
@@ -1764,15 +1907,48 @@ function renderMemories() {
   state.memories.forEach(m => {
     const row = document.createElement("div");
     row.className = "prompt-item";
-    row.innerHTML = `<span class="name" title="${escapeHtml(m.text)}">${escapeHtml(m.text)}</span><span class="x" title="Forget">✕</span>`;
+    row.innerHTML = `<span class="name" title="${escapeHtml(m.text)}">${escapeHtml(m.text)}</span>
+      <span class="x" title="Edit" data-act="edit">✎</span>
+      <span class="x" title="Forget" data-act="del">✕</span>`;
     row.querySelector(".name").style.whiteSpace = "normal";
-    row.querySelector(".x").onclick = () => {
+    row.querySelector('[data-act="edit"]').onclick = (e) => { e.stopPropagation(); startMemoryEdit(row, m); };
+    row.querySelector('[data-act="del"]').onclick = (e) => {
+      e.stopPropagation();
       state.memories = state.memories.filter(x => x.id !== m.id);
       LS.set("gamma.memories", state.memories);
       renderMemories(); syncControls();
     };
     el.memoryList.appendChild(row);
   });
+}
+
+/** Swaps a memory row into an inline textarea editor (Save / Cancel). */
+function startMemoryEdit(row, m) {
+  row.innerHTML = "";
+  row.style.cssText = "display:block; cursor:default; padding:8px 10px;";
+  const ta = document.createElement("textarea");
+  ta.className = "edit-area";
+  ta.style.minHeight = "64px";
+  ta.value = m.text;
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText = "display:flex; gap:8px; margin-top:8px;";
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "btn primary sm"; saveBtn.textContent = "Save";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn sm"; cancelBtn.textContent = "Cancel";
+  btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
+  row.appendChild(ta); row.appendChild(btnRow);
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = ta.value.length;
+
+  saveBtn.onclick = () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    m.text = text;
+    LS.set("gamma.memories", state.memories);
+    renderMemories(); syncControls();
+  };
+  cancelBtn.onclick = () => renderMemories();
 }
 
 /* =================================================================
