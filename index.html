@@ -1339,8 +1339,13 @@ async function webSearchLookup(query, { signal } = {}) {
     params: { name: toolName, arguments: { [argKey]: query.slice(0, 300) } },
   }, { signal });
   if (call.message && call.message.error) throw new Error(call.message.error.message || "Web search tool call failed.");
-  const content = (call.message && call.message.result && call.message.result.content) || [];
+  const result = (call.message && call.message.result) || {};
+  const content = result.content || [];
   const text = content.filter(c => c.type === "text").map(c => c.text).join("\n");
+  // MCP tool-level failures (e.g. billing/quota issues) come back as a normal
+  // JSON-RPC success with result.isError:true — don't treat that text as real
+  // search results, or the model will end up quoting the error verbatim.
+  if (result.isError) throw new Error(text || "Web search tool reported an error.");
   return parseMcpSearchResults(text);
 }
 
