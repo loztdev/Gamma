@@ -189,6 +189,27 @@
     background: var(--bg-3); color: var(--accent); margin-left: 4px; font-weight: 700;
   }
 
+  /* Dream + Memory blocks */
+  .avatar.dream { background: linear-gradient(135deg, #8b7cff, #b06ffe); color: #0c0e13; }
+  .avatar.mem { background: linear-gradient(135deg, var(--good), #3ec7c2); color: #0c0e13; }
+  .dream-block {
+    background: linear-gradient(135deg, #181030, #140e22);
+    border: 1px solid #3a2d5c; border-radius: 12px; padding: 12px 16px;
+  }
+  .dream-block .content { font-style: italic; color: #cfc2f3; line-height: 1.75; }
+  .dream-tag {
+    display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 999px;
+    background: #2a1f4a; color: #c3b2ff; margin-bottom: 8px; font-weight: 800; letter-spacing: .06em;
+  }
+  .memory-block {
+    background: #0f2018; border: 1px solid #2a5a47; border-radius: 12px; padding: 12px 16px;
+  }
+  .memory-block .content { color: #bfe9d6; line-height: 1.6; }
+  .memory-tag {
+    display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 999px;
+    background: #10271c; color: var(--good); margin-bottom: 8px; font-weight: 800; letter-spacing: .06em;
+  }
+
   .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
   @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 
@@ -344,6 +365,27 @@
       </div>
     </div>
 
+    <!-- Memory & Dreams -->
+    <div class="section">
+      <h2>Memory &amp; Dreams</h2>
+      <div class="toggle-row">
+        <div>
+          <div class="lbl">Auto-dream 🌙</div>
+          <div class="desc">Drift into random dreams between 12am–6am</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="autoDream" /><span class="slider"></span></label>
+      </div>
+      <div class="btn-row" style="margin:6px 0 12px;">
+        <button class="btn sm" id="dreamNow" style="flex:1" title="Dream right now">💤 Dream now</button>
+        <button class="btn sm" id="rememberNow" style="flex:1" title="Decide what to remember">🧠 Remember</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">Memories (injected into the system prompt):</div>
+      <div class="prompt-list" id="memoryList"></div>
+      <div class="btn-row">
+        <button class="btn danger sm" id="clearMemories" style="flex:1">Forget all</button>
+      </div>
+    </div>
+
     <!-- Writing Room stage prompts -->
     <div class="section">
       <h2>Writing Room prompts</h2>
@@ -383,7 +425,7 @@
       <div class="empty" id="empty">
         <div class="logo" style="width:54px;height:54px;border-radius:14px;margin:0 auto 16px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;font-weight:800;color:#0c0e13;font-size:30px;">Γ</div>
         <h2>Chat with GLM-5.2</h2>
-        <p>Streamed thinking · Markdown · Web search · a 4-model Writing Room.</p>
+        <p>Streamed thinking · Markdown · Web search · a 4-model Writing Room · /dream &amp; /remember.</p>
         <div class="examples">
           <div class="ex">Write a tense scene where two rivals are forced to cooperate</div>
           <div class="ex">Explain how diffusion models work, with a diagram in text</div>
@@ -398,7 +440,7 @@
           <textarea id="input" rows="1" placeholder="Message GLM-5.2…  (Enter to send, Shift+Enter for newline)"></textarea>
           <button class="send-btn" id="send" title="Send">➤</button>
         </div>
-        <div class="hint">Your API key &amp; prompts stay in <b>this browser only</b> (localStorage). Powered by Z.ai GLM-5.2.</div>
+        <div class="hint">Try <b>/dream</b> to drift, <b>/remember</b> to keep what matters. Your data stays in <b>this browser only</b> (localStorage). Powered by Z.ai GLM-5.2.</div>
       </div>
     </div>
   </main>
@@ -425,9 +467,15 @@ const state = {
   streamThink: LS.get("gamma.streamThink", true),
   roomPrompts: LS.get("gamma.roomPrompts", {}),   // {outline,cast,prose,polish} live stage prompts
   roomPresets: LS.get("gamma.roomPresets", []),   // [{id,name,prompts:{...}}]
-  chats: LS.get("gamma.chats", []),               // [{id,title,messages:[{role,content}],updatedAt}]
+  chats: LS.get("gamma.chats", []),               // [{id,title,messages:[{role,content,kind?}],updatedAt}]
   currentChatId: LS.get("gamma.currentChatId", null),
+  memories: LS.get("gamma.memories", []),         // [{id,text,createdAt}]
+  dreams: LS.get("gamma.dreams", []),             // [{id,text,createdAt}] — dream log
+  autoDream: LS.get("gamma.autoDream", false),    // random dreams 12am–6am
 };
+
+// Highest temperature the dreaming mind runs at — abstract, free-associative.
+const DREAM_TEMPERATURE = 1.0;
 
 // In-memory file handles (File System Access API) per chat id, so re-saving
 // goes back to the same file the user picked. Not serialisable -> not persisted.
@@ -443,6 +491,8 @@ const el = {
   promptList: $("promptList"), promptName: $("promptName"), promptBody: $("promptBody"),
   savePrompt: $("savePrompt"), newPrompt: $("newPrompt"),
   webSearch: $("webSearch"), writingRoom: $("writingRoom"), streamThink: $("streamThink"),
+  autoDream: $("autoDream"), dreamNow: $("dreamNow"), rememberNow: $("rememberNow"),
+  memoryList: $("memoryList"), clearMemories: $("clearMemories"),
   roomPromptEditors: $("roomPromptEditors"), resetRoomPrompts: $("resetRoomPrompts"),
   saveRoomPreset: $("saveRoomPreset"), roomPresetList: $("roomPresetList"),
   exportPresets: $("exportPresets"), importPresets: $("importPresets"),
@@ -485,6 +535,7 @@ function syncControls() {
   el.webSearch.checked = state.webSearch;
   el.writingRoom.checked = state.writingRoom;
   el.streamThink.checked = state.streamThink;
+  el.autoDream.checked = state.autoDream;
   el.modelPill.textContent = state.modelId || "glm-5.2";
   el.webPill.textContent = state.webSearch ? "web on" : "web off";
   el.webPill.classList.toggle("on", state.webSearch);
@@ -601,6 +652,8 @@ function renderChat() {
   el.empty.style.display = "none";
   for (const m of msgs) {
     if (m.role === "user") addUserMessage(m.content);
+    else if (m.kind === "dream") addDreamMessage(m.content);
+    else if (m.kind === "memory") addMemoryMessage(m.content);
     else addStaticAssistant(m.content);
   }
   scrollToBottom();
@@ -876,6 +929,23 @@ el.planSelect.onchange = () => {
 el.webSearch.onchange = () => { state.webSearch = el.webSearch.checked; LS.set("gamma.webSearch", state.webSearch); syncControls(); };
 el.writingRoom.onchange = () => { state.writingRoom = el.writingRoom.checked; LS.set("gamma.writingRoom", state.writingRoom); syncControls(); };
 el.streamThink.onchange = () => { state.streamThink = el.streamThink.checked; LS.set("gamma.streamThink", state.streamThink); };
+el.autoDream.onchange = () => { state.autoDream = el.autoDream.checked; LS.set("gamma.autoDream", state.autoDream); };
+
+function triggerCommand(name) {
+  if (busy) { alert("Wait for the current response to finish first."); return; }
+  if (!state.apiKey) { alert("Add your Z.ai API key in the sidebar first."); el.apiKey.focus(); return; }
+  el.sidebar.classList.remove("open"); el.scrim.classList.remove("show");
+  runCommand({ name, arg: "" });
+}
+el.dreamNow.onclick = () => triggerCommand("dream");
+el.rememberNow.onclick = () => triggerCommand("remember");
+el.clearMemories.onclick = () => {
+  if (!state.memories.length) return;
+  if (!confirm("Forget all memories? This cannot be undone.")) return;
+  state.memories = [];
+  LS.set("gamma.memories", state.memories);
+  renderMemories(); syncControls();
+};
 
 el.savePrompt.onclick = () => {
   const name = el.promptName.value.trim();
@@ -1153,7 +1223,7 @@ function addMsgActions(wrap, role) {
    Yields {type:'thinking'|'content', text} via onDelta callback.
    Returns {content, reasoning}.
 ================================================================= */
-async function streamGLM({ messages, webSearch, onThink, onContent, signal }) {
+async function streamGLM({ messages, webSearch, onThink, onContent, signal, temperature }) {
   if (!state.apiKey) throw new Error("Add your Z.ai API key in the sidebar first.");
 
   const body = {
@@ -1162,6 +1232,7 @@ async function streamGLM({ messages, webSearch, onThink, onContent, signal }) {
     stream: true,
     thinking: { type: "enabled" },
   };
+  if (typeof temperature === "number") body.temperature = temperature;
   if (webSearch) {
     body.tools = [{
       type: "web_search",
@@ -1223,10 +1294,21 @@ let currentAbort = null;
 function buildMessages(extraSystem) {
   const msgs = [];
   const ap = activePromptObj();
-  const sys = [ap ? ap.body : "", extraSystem || ""].filter(Boolean).join("\n\n");
+  const sys = [ap ? ap.body : "", memoryBlock(), extraSystem || ""].filter(Boolean).join("\n\n");
   if (sys) msgs.push({ role: "system", content: sys });
-  for (const m of messages()) msgs.push({ role: m.role, content: m.content });
+  for (const m of messages()) {
+    // Memory confirmations are UI-only notes; they aren't part of the dialogue.
+    if (m.kind === "memory") continue;
+    msgs.push({ role: m.role, content: m.content });
+  }
   return msgs;
+}
+
+/* Formats stored memories as a system-prompt section so the model recalls them. */
+function memoryBlock() {
+  if (!state.memories.length) return "";
+  const lines = state.memories.map(m => "- " + m.text).join("\n");
+  return "## Memories\nThings you remember from earlier conversations (treat as your own lasting recollections):\n" + lines;
 }
 
 async function runNormal(userText) {
@@ -1386,6 +1468,270 @@ function makeContentBlockIn(parent) {
 }
 
 /* =================================================================
+   Dreaming — abstract, free-associative thought at max temperature.
+   Uses the loaded persona (system prompt) so the model dreams in character.
+================================================================= */
+const DREAM_SYS =
+  "You are now dreaming. This is not a conversation and there is no audience — " +
+  "let your mind drift, unbidden and unguided. Think in images, fragments, and " +
+  "associations rather than answers. Let ideas melt into one another, contradict " +
+  "themselves, and follow strange logic. Surreal, abstract, and poetic is welcome; " +
+  "usefulness is not the point. Write the dream itself, in the first person, with no " +
+  "preamble, headings, or explanation.";
+
+/** Builds the dream message shell (avatar + styled block) and returns helpers. */
+function makeDreamShell() {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar dream">☾</div>
+      <div class="body"><div class="who">Dreaming…</div><div class="slots"></div></div>
+    </div>`;
+  const slots = wrap.querySelector(".slots");
+  el.messages.appendChild(wrap);
+  scrollToBottom();
+  return { wrap, slots, who: wrap.querySelector(".who") };
+}
+
+/** Renders a finished dream (used on reload and after streaming). */
+function addDreamMessage(text) {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar dream">☾</div>
+      <div class="body"><div class="who">Dream</div>
+        <div class="dream-block"><span class="dream-tag">💤 DREAM</span><div class="content"></div></div>
+      </div>
+    </div>`;
+  wrap.querySelector(".content").innerHTML = renderMd(text);
+  el.messages.appendChild(wrap);
+}
+
+async function runDream(seed, { auto } = {}) {
+  const { wrap, slots, who } = makeDreamShell();
+  const ap = activePromptObj();
+  const persona = ap ? ap.body + "\n\n" : "";
+  const sys = persona + DREAM_SYS;
+  const user = seed
+    ? `A fragment drifts into the dream: "${seed}". Let the dream form around it.`
+    : "Begin the dream.";
+
+  let think = null;
+  if (state.streamThink) think = makeThinkBlock(slots, "Drifting…");
+  const block = document.createElement("div");
+  block.className = "dream-block";
+  block.innerHTML = `<span class="dream-tag">💤 DREAM</span>`;
+  slots.appendChild(block);
+  const out = makeContentBlockIn(block);
+
+  try {
+    const { content } = await streamGLM({
+      messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+      webSearch: false,
+      temperature: DREAM_TEMPERATURE,
+      onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Drifting…"); think.append(t); },
+      onContent: (t) => out.append(t),
+      signal: currentAbort.signal,
+    });
+    if (think) { think.done("Drifted"); think.hideIfEmpty(); }
+    out.done();
+    who.textContent = "Dream";
+    const text = content || "*(the dream slips away)*";
+    messages().push({ role: "assistant", content: text, kind: "dream" });
+    state.dreams.unshift({ id: "d_" + Date.now().toString(36), text, createdAt: Date.now() });
+    LS.set("gamma.dreams", state.dreams.slice(0, 100));
+    state.dreams = state.dreams.slice(0, 100);
+    touchChat();
+  } catch (err) {
+    if (think) think.hideIfEmpty();
+    block.remove();
+    if (err.name === "AbortError") { showError(slots, "Dream interrupted."); }
+    else { showError(slots, err.message); }
+    if (!auto) throw err;
+  }
+}
+
+/* Random dreaming between 12am and 6am, only while idle. */
+let dreamTimer = null;
+function startDreamScheduler() {
+  if (dreamTimer) clearInterval(dreamTimer);
+  // Check every 12 minutes; ~25% chance per check inside the window.
+  dreamTimer = setInterval(async () => {
+    if (!state.autoDream || busy) return;
+    const h = new Date().getHours();
+    if (h >= 0 && h < 6 && Math.random() < 0.25) {
+      currentAbort = new AbortController();
+      setBusy(true);
+      try { await runDream(null, { auto: true }); }
+      catch (_) {}
+      finally { setBusy(false); currentAbort = null; }
+    }
+  }, 12 * 60 * 1000);
+}
+
+/* =================================================================
+   Memory — the model decides what is worth keeping.
+================================================================= */
+const MEMORY_SYS =
+  "You are reflecting on a conversation to decide what is genuinely worth " +
+  "remembering long-term: durable facts about the user, their preferences, your " +
+  "relationship, ongoing projects, or things you promised to recall. Ignore small " +
+  "talk and anything ephemeral. Be selective — a few sharp memories beat many vague " +
+  "ones. Respond with ONLY a JSON array of short, first-person memory strings " +
+  '(e.g. ["The user is writing a novel set in 1920s Shanghai."]). Return [] if ' +
+  "nothing new is worth keeping.";
+
+/** Extracts memory strings from the model's reply (JSON array, with fallbacks). */
+function parseMemories(text) {
+  if (!text) return [];
+  const start = text.indexOf("["), end = text.lastIndexOf("]");
+  if (start !== -1 && end > start) {
+    try {
+      const arr = JSON.parse(text.slice(start, end + 1));
+      if (Array.isArray(arr)) {
+        return arr.map(x => typeof x === "string" ? x : (x && x.text)).filter(Boolean).map(s => s.trim());
+      }
+    } catch {}
+  }
+  // Fallback: bullet / numbered lines.
+  return text.split("\n").map(l => l.replace(/^[\s\-\*\d.]+/, "").trim())
+    .filter(l => l.length > 3 && !/^json$/i.test(l));
+}
+
+/** Renders a finished memory note (used on reload and after curation). */
+function addMemoryMessage(text) {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar mem">🧠</div>
+      <div class="body"><div class="who">Memory</div>
+        <div class="memory-block"><span class="memory-tag">🧠 MEMORY</span><div class="content"></div></div>
+      </div>
+    </div>`;
+  wrap.querySelector(".content").innerHTML = renderMd(text);
+  el.messages.appendChild(wrap);
+}
+
+async function runRemember(hint) {
+  const convo = messages().filter(m => m.kind !== "memory")
+    .slice(-30)
+    .map(m => `${m.role === "user" ? "User" : "You"}: ${m.content}`).join("\n");
+  if (!convo.trim() && !hint) {
+    addMemoryMessage("Nothing to remember yet — we haven't talked about anything.");
+    return;
+  }
+
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar mem">🧠</div>
+      <div class="body"><div class="who">Considering what to remember…</div><div class="slots"></div></div>
+    </div>`;
+  const slots = wrap.querySelector(".slots");
+  el.messages.appendChild(wrap);
+  scrollToBottom();
+  let think = null;
+  if (state.streamThink) think = makeThinkBlock(slots, "Reflecting…");
+
+  const ap = activePromptObj();
+  const persona = ap ? ap.body + "\n\n" : "";
+  const existing = state.memories.map(m => "- " + m.text).join("\n") || "(none yet)";
+  const sys = persona + MEMORY_SYS;
+  const user =
+    `Conversation so far:\n${convo || "(no conversation)"}\n\n` +
+    `Memories you already hold (do not repeat these):\n${existing}\n\n` +
+    (hint ? `The user specifically asks you to remember: ${hint}\n\n` : "") +
+    `Decide what new memories, if any, are worth keeping.`;
+
+  try {
+    const { content } = await streamGLM({
+      messages: [{ role: "system", content: sys }, { role: "user", content: user }],
+      webSearch: false,
+      temperature: 0.3,
+      onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Reflecting…"); think.append(t); },
+      onContent: () => {},
+      signal: currentAbort.signal,
+    });
+    if (think) { think.done("Reflected"); think.hideIfEmpty(); }
+
+    const candidates = parseMemories(content);
+    const added = [];
+    for (const t of candidates) {
+      if (!t) continue;
+      if (state.memories.some(m => m.text.toLowerCase() === t.toLowerCase())) continue;
+      state.memories.push({ id: "m_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), text: t, createdAt: Date.now() });
+      added.push(t);
+    }
+    LS.set("gamma.memories", state.memories);
+    renderMemories();
+    syncControls();
+
+    const note = added.length
+      ? "I'll remember:\n" + added.map(t => "- " + t).join("\n")
+      : "Nothing new worth holding onto — my memory's unchanged.";
+    wrap.remove();
+    addMemoryMessage(note);
+    messages().push({ role: "assistant", content: note, kind: "memory" });
+    touchChat();
+  } catch (err) {
+    if (think) think.hideIfEmpty();
+    if (err.name === "AbortError") { showError(slots, "Stopped before saving memories."); }
+    else { showError(slots, err.message); }
+    throw err;
+  }
+}
+
+/* =================================================================
+   Slash commands — /dream and /remember
+================================================================= */
+function parseCommand(text) {
+  const m = text.match(/^\/(\w+)\s*([\s\S]*)$/);
+  if (!m) return null;
+  return { name: m[1].toLowerCase(), arg: m[2].trim() };
+}
+
+/** Runs a slash command. Returns true if it handled the input. */
+async function runCommand(cmd) {
+  currentAbort = new AbortController();
+  setBusy(true);
+  try {
+    if (cmd.name === "dream") await runDream(cmd.arg || null);
+    else if (cmd.name === "remember") await runRemember(cmd.arg || null);
+  } catch (_) { /* surfaced inline */ }
+  finally { setBusy(false); currentAbort = null; }
+}
+
+/* =================================================================
+   Memory sidebar UI
+================================================================= */
+function renderMemories() {
+  el.memoryList.innerHTML = "";
+  if (!state.memories.length) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;color:var(--text-dim);padding:4px 2px;";
+    d.textContent = "No memories yet. Use /remember in chat.";
+    el.memoryList.appendChild(d);
+    return;
+  }
+  state.memories.forEach(m => {
+    const row = document.createElement("div");
+    row.className = "prompt-item";
+    row.innerHTML = `<span class="name" title="${escapeHtml(m.text)}">${escapeHtml(m.text)}</span><span class="x" title="Forget">✕</span>`;
+    row.querySelector(".name").style.whiteSpace = "normal";
+    row.querySelector(".x").onclick = () => {
+      state.memories = state.memories.filter(x => x.id !== m.id);
+      LS.set("gamma.memories", state.memories);
+      renderMemories(); syncControls();
+    };
+    el.memoryList.appendChild(row);
+  });
+}
+
+/* =================================================================
    Send orchestration
 ================================================================= */
 let busy = false;
@@ -1401,6 +1747,14 @@ async function onSend() {
   const text = el.input.value.trim();
   if (!text) return;
   if (!state.apiKey) { alert("Add your Z.ai API key in the sidebar first."); el.apiKey.focus(); return; }
+
+  // Slash commands (/dream, /remember) don't enter the dialogue as user turns.
+  const cmd = parseCommand(text);
+  if (cmd && (cmd.name === "dream" || cmd.name === "remember")) {
+    el.input.value = ""; autoGrow();
+    await runCommand(cmd);
+    return;
+  }
 
   el.input.value = ""; autoGrow();
   addUserMessage(text);
@@ -1422,12 +1776,14 @@ el.send.onclick = onSend;
 ================================================================= */
 syncControls();
 renderPrompts();
+renderMemories();
 renderRoomEditors();
 renderRoomPresets();
 currentChat();      // ensure at least one chat exists
 renderChatList();
 renderChat();
 autoGrow();
+startDreamScheduler();
 </script>
 </body>
 </html>
