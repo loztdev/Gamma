@@ -351,6 +351,14 @@
         </div>
         <label class="switch"><input type="checkbox" id="webSearch" /><span class="slider"></span></label>
       </div>
+      <label class="field">
+        <span>Google Search API key</span>
+        <input type="password" id="googleSearchKey" placeholder="AIza..." autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Google Search Engine ID (cx)</span>
+        <input type="text" id="googleSearchCx" placeholder="e.g. 017576662512468239146:omuauf_lfve" />
+      </label>
       <div class="toggle-row">
         <div>
           <div class="lbl">Writing Room ✍️</div>
@@ -465,6 +473,8 @@ const state = {
   prompts: LS.get("gamma.prompts", []),          // [{id,name,body}]
   activePrompt: LS.get("gamma.activePrompt", null),
   webSearch: LS.get("gamma.webSearch", false),
+  googleSearchKey: LS.get("gamma.googleSearchKey", ""),
+  googleSearchCx: LS.get("gamma.googleSearchCx", ""),
   writingRoom: LS.get("gamma.writingRoom", false),
   streamThink: LS.get("gamma.streamThink", true),
   roomPrompts: LS.get("gamma.roomPrompts", {}),   // {outline,cast,prose,polish} live stage prompts
@@ -492,7 +502,8 @@ const el = {
   newChat: $("newChat"), saveChatFile: $("saveChatFile"), openChatFile: $("openChatFile"), chatList: $("chatList"),
   promptList: $("promptList"), promptName: $("promptName"), promptBody: $("promptBody"),
   savePrompt: $("savePrompt"), newPrompt: $("newPrompt"),
-  webSearch: $("webSearch"), writingRoom: $("writingRoom"), streamThink: $("streamThink"),
+  webSearch: $("webSearch"), googleSearchKey: $("googleSearchKey"), googleSearchCx: $("googleSearchCx"),
+  writingRoom: $("writingRoom"), streamThink: $("streamThink"),
   autoDream: $("autoDream"), dreamNow: $("dreamNow"), rememberNow: $("rememberNow"),
   memoryList: $("memoryList"), clearMemories: $("clearMemories"),
   roomPromptEditors: $("roomPromptEditors"), resetRoomPrompts: $("resetRoomPrompts"),
@@ -535,6 +546,8 @@ function syncControls() {
   el.planPill.classList.toggle("on", isCoding);
   el.planPill.title = state.baseUrl;
   el.webSearch.checked = state.webSearch;
+  el.googleSearchKey.value = state.googleSearchKey;
+  el.googleSearchCx.value = state.googleSearchCx;
   el.writingRoom.checked = state.writingRoom;
   el.streamThink.checked = state.streamThink;
   el.autoDream.checked = state.autoDream;
@@ -929,6 +942,8 @@ el.planSelect.onchange = () => {
   syncControls();
 };
 el.webSearch.onchange = () => { state.webSearch = el.webSearch.checked; LS.set("gamma.webSearch", state.webSearch); syncControls(); };
+el.googleSearchKey.oninput = () => { state.googleSearchKey = el.googleSearchKey.value.trim(); LS.set("gamma.googleSearchKey", state.googleSearchKey); };
+el.googleSearchCx.oninput = () => { state.googleSearchCx = el.googleSearchCx.value.trim(); LS.set("gamma.googleSearchCx", state.googleSearchCx); };
 el.writingRoom.onchange = () => { state.writingRoom = el.writingRoom.checked; LS.set("gamma.writingRoom", state.writingRoom); syncControls(); };
 el.streamThink.onchange = () => { state.streamThink = el.streamThink.checked; LS.set("gamma.streamThink", state.streamThink); };
 el.autoDream.onchange = () => { state.autoDream = el.autoDream.checked; LS.set("gamma.autoDream", state.autoDream); };
@@ -1254,99 +1269,37 @@ function addMsgActions(wrap, role) {
 }
 
 /* =================================================================
-   Z.ai live web search
-   The chat-completions "web_search" tool is silently ignored on some
-   plans/endpoints (no error — the model just answers without searching).
-   Z.ai actually exposes search through a hosted "Web Search Prime" MCP
-   server (JSON-RPC 2.0 over the MCP Streamable HTTP transport), so Gamma
-   speaks MCP to it directly and feeds the results to the model as
-   grounding context.
+   Live web search
+   Z.ai's own search mechanisms (inline chat-completions "web_search" tool,
+   and the hosted "Web Search Prime" MCP server) both turned out to be
+   unreliable on Coding Plan accounts — silently ignored in the first case,
+   401s regardless of balance in the second (a known Z.ai-side issue).
+   Gamma instead uses Google's Custom Search JSON API directly from the
+   browser (it supports CORS, unlike most search APIs) and feeds the
+   results to the model as grounding context.
 ================================================================= */
-const MCP_WEB_SEARCH_URL = "https://api.z.ai/api/mcp/web_search_prime/mcp";
-
-/** One MCP JSON-RPC round trip. Response may come back as plain JSON or as
- *  an SSE stream of JSON-RPC messages (per the Streamable HTTP transport). */
-async function mcpRequest(sessionId, payload, { signal } = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-    "Accept": "application/json, text/event-stream",
-    "Authorization": "Bearer " + state.apiKey,
-  };
-  if (sessionId) headers["Mcp-Session-Id"] = sessionId;
-  const res = await fetch(MCP_WEB_SEARCH_URL, { method: "POST", headers, body: JSON.stringify(payload), signal });
-  const newSessionId = res.headers.get("Mcp-Session-Id") || sessionId;
-  if (!res.ok) {
-    let detail = "";
-    try { detail = await res.text(); } catch {}
-    throw new Error(`MCP error ${res.status}: ${detail.slice(0, 300) || res.statusText}`);
-  }
-  const raw = await res.text();
-  const messages = [];
-  for (const line of raw.split("\n")) {
-    const t = line.trim();
-    if (t.startsWith("data:")) { try { messages.push(JSON.parse(t.slice(5).trim())); } catch {} }
-  }
-  if (!messages.length && raw.trim()) { try { messages.push(JSON.parse(raw.trim())); } catch {} }
-  const match = ("id" in payload) ? messages.find(m => m.id === payload.id) : messages[0];
-  return { message: match || messages[messages.length - 1], sessionId: newSessionId };
-}
-
-/** Turns the tool's text content (JSON results, or freeform text) into {title,link,content}[]. */
-function parseMcpSearchResults(text) {
-  if (!text) return [];
-  const trimmed = text.trim();
-  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-    try {
-      const data = JSON.parse(trimmed);
-      const arr = Array.isArray(data) ? data : (data.results || data.search_result || data.data || []);
-      const mapped = arr.map(r => ({
-        title: (r.title || r.name || "Untitled").trim(),
-        link: r.link || r.url || "",
-        content: (r.content || r.summary || r.snippet || "").trim(),
-      })).filter(r => r.title || r.content).slice(0, 5);
-      if (mapped.length) return mapped;
-    } catch {}
-  }
-  // Fallback: the tool returned a pre-formatted text blob — keep it whole rather than losing it.
-  return [{ title: "Web search results", link: "", content: trimmed }];
-}
-
 async function webSearchLookup(query, { signal } = {}) {
-  const init = await mcpRequest(null, {
-    jsonrpc: "2.0", id: 1, method: "initialize",
-    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "gamma", version: "1.0" } },
-  }, { signal });
-  if (init.message && init.message.error) throw new Error("MCP initialize failed: " + init.message.error.message);
-  const sessionId = init.sessionId;
+  if (!state.googleSearchKey || !state.googleSearchCx) {
+    throw new Error("Add a Google Search API key and Search Engine ID (cx) in the sidebar first.");
+  }
+  const url = new URL("https://www.googleapis.com/customsearch/v1");
+  url.searchParams.set("key", state.googleSearchKey);
+  url.searchParams.set("cx", state.googleSearchCx);
+  url.searchParams.set("q", query.slice(0, 300));
+  url.searchParams.set("num", "5");
 
-  try { await mcpRequest(sessionId, { jsonrpc: "2.0", method: "notifications/initialized" }, { signal }); } catch {}
-
-  // Discover the search tool's argument name instead of guessing it.
-  let toolName = "webSearchPrime", argKey = "query";
-  try {
-    const list = await mcpRequest(sessionId, { jsonrpc: "2.0", id: 2, method: "tools/list" }, { signal });
-    const tools = (list.message && list.message.result && list.message.result.tools) || [];
-    const tool = tools.find(t => /web.?search/i.test(t.name)) || tools[0];
-    if (tool) {
-      toolName = tool.name;
-      const props = tool.inputSchema && tool.inputSchema.properties ? Object.keys(tool.inputSchema.properties) : [];
-      if (props.length) argKey = props.includes("query") ? "query" : props[0];
-    }
-  } catch {}
-
-  const call = await mcpRequest(sessionId, {
-    jsonrpc: "2.0", id: 3, method: "tools/call",
-    params: { name: toolName, arguments: { [argKey]: query.slice(0, 300) } },
-  }, { signal });
-  if (call.message && call.message.error) throw new Error(call.message.error.message || "Web search tool call failed.");
-  const result = (call.message && call.message.result) || {};
-  const content = result.content || [];
-  const text = content.filter(c => c.type === "text").map(c => c.text).join("\n");
-  // MCP tool-level failures (e.g. billing/quota issues) come back as a normal
-  // JSON-RPC success with result.isError:true — don't treat that text as real
-  // search results, or the model will end up quoting the error verbatim.
-  if (result.isError) throw new Error(text || "Web search tool reported an error.");
-  return parseMcpSearchResults(text);
+  const res = await fetch(url.toString(), { signal });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = (data.error && data.error.message) || res.statusText;
+    throw new Error(`Google Search error ${res.status}: ${detail}`);
+  }
+  const items = data.items || [];
+  return items.map(r => ({
+    title: (r.title || "Untitled").trim(),
+    link: r.link || "",
+    content: (r.snippet || "").trim(),
+  }));
 }
 
 function webResultsToContext(query, results) {
