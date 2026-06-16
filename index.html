@@ -212,6 +212,22 @@
     background: #10271c; color: var(--good); margin-bottom: 8px; font-weight: 800; letter-spacing: .06em;
   }
 
+  /* Headroom compressor block */
+  .avatar.hr { background: linear-gradient(135deg, var(--warn), #ff7a59); color: #0c0e13; }
+  .headroom-block {
+    background: #221a0d; border: 1px solid #5c4322; border-radius: 12px; padding: 12px 16px;
+  }
+  .headroom-block .content { color: #f0d9b3; line-height: 1.6; font-size: 13px; }
+  .headroom-tag {
+    display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 999px;
+    background: #2e2110; color: var(--warn); margin-bottom: 8px; font-weight: 800; letter-spacing: .06em;
+  }
+  .topbar .pill.warn { color: var(--warn); border-color: #5c4322; background: #1f1809; }
+  .meter-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+  .meter { height: 6px; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--border); overflow: hidden; }
+  .meter > div { height: 100%; width: 0%; background: linear-gradient(90deg, var(--good), var(--accent)); transition: width .25s, background .25s; }
+  .meter.warn > div { background: linear-gradient(90deg, var(--warn), #ff7a59); }
+
   .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
   @keyframes blink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 
@@ -388,6 +404,28 @@
       </div>
     </div>
 
+    <!-- Headroom compressor -->
+    <div class="section">
+      <h2>Headroom Compressor</h2>
+      <div class="toggle-row">
+        <div>
+          <div class="lbl">Auto-compress 🗜️</div>
+          <div class="desc">Fold older turns into a summary as context fills up</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="headroomEnabled" checked /><span class="slider"></span></label>
+      </div>
+      <label class="field">
+        <span>Context window (tokens, approx.)</span>
+        <input type="text" id="contextWindow" inputmode="numeric" />
+      </label>
+      <div class="meter-row"><span id="headroomUsageLabel">Context used: ~0%</span><span id="headroomTokensLabel">~0 / 0 tok</span></div>
+      <div class="meter" id="headroomMeter"><div id="headroomMeterBar"></div></div>
+      <div style="font-size:11px;color:var(--text-dim);margin:10px 0 6px;" id="headroomStatsLabel">No compression yet — plenty of headroom.</div>
+      <div class="btn-row">
+        <button class="btn sm" id="compressNow" style="flex:1">🗜️ Compress now</button>
+      </div>
+    </div>
+
     <!-- Writing Room stage prompts -->
     <div class="section">
       <h2>Writing Room prompts</h2>
@@ -419,6 +457,7 @@
       <span class="pill" id="planPill">standard</span>
       <span class="pill" id="webPill">web off</span>
       <span class="pill" id="roomPill">room off</span>
+      <span class="pill" id="headroomPill" title="Estimated context window usage">ctx 0%</span>
       <div class="spacer"></div>
       <span class="status" id="sysPill">No system prompt</span>
     </div>
@@ -474,6 +513,8 @@ const state = {
   memories: LS.get("gamma.memories", []),         // [{id,text,createdAt}]
   dreams: LS.get("gamma.dreams", []),             // [{id,text,createdAt}] — dream log
   autoDream: LS.get("gamma.autoDream", false),    // random dreams 12am–6am
+  headroomEnabled: LS.get("gamma.headroomEnabled", true), // auto-fold old turns into a summary
+  contextWindow: LS.get("gamma.contextWindow", 128000),   // tokens, approx. — drives the Headroom tracker
 };
 
 // Highest temperature the dreaming mind runs at — abstract, free-associative.
@@ -495,6 +536,9 @@ const el = {
   webSearch: $("webSearch"), writingRoom: $("writingRoom"), streamThink: $("streamThink"),
   autoDream: $("autoDream"), dreamNow: $("dreamNow"), rememberNow: $("rememberNow"),
   memoryList: $("memoryList"), clearMemories: $("clearMemories"),
+  headroomEnabled: $("headroomEnabled"), contextWindow: $("contextWindow"), compressNow: $("compressNow"),
+  headroomMeter: $("headroomMeter"), headroomMeterBar: $("headroomMeterBar"),
+  headroomUsageLabel: $("headroomUsageLabel"), headroomTokensLabel: $("headroomTokensLabel"), headroomStatsLabel: $("headroomStatsLabel"),
   roomPromptEditors: $("roomPromptEditors"), resetRoomPrompts: $("resetRoomPrompts"),
   saveRoomPreset: $("saveRoomPreset"), roomPresetList: $("roomPresetList"),
   exportPresets: $("exportPresets"), importPresets: $("importPresets"),
@@ -502,6 +546,7 @@ const el = {
   messages: $("messages"), empty: $("empty"),
   input: $("input"), send: $("send"),
   modelPill: $("modelPill"), planPill: $("planPill"), webPill: $("webPill"), roomPill: $("roomPill"), sysPill: $("sysPill"),
+  headroomPill: $("headroomPill"),
   menuBtn: $("menuBtn"), sidebar: $("sidebar"), scrim: $("scrim"),
 };
 
@@ -538,6 +583,8 @@ function syncControls() {
   el.writingRoom.checked = state.writingRoom;
   el.streamThink.checked = state.streamThink;
   el.autoDream.checked = state.autoDream;
+  el.headroomEnabled.checked = state.headroomEnabled;
+  el.contextWindow.value = state.contextWindow;
   el.modelPill.textContent = state.modelId || "glm-5.2";
   el.webPill.textContent = state.webSearch ? "web on" : "web off";
   el.webPill.classList.toggle("on", state.webSearch);
@@ -583,6 +630,7 @@ function touchChat() {
   state.chats.sort((a, b) => b.updatedAt - a.updatedAt);
   saveChats();
   renderChatList();
+  updateHeadroomUI();
 }
 
 function newChat() {
@@ -656,9 +704,11 @@ function renderChat() {
     if (m.role === "user") addUserMessage(m.content);
     else if (m.kind === "dream") addDreamMessage(m.content);
     else if (m.kind === "memory") addMemoryMessage(m.content, m.reasoning);
+    else if (m.kind === "compression") addCompressionMessage(m.content, m.stats);
     else addStaticAssistant(m.content);
   }
   scrollToBottom();
+  updateHeadroomUI();
 }
 
 /* =================================================================
@@ -932,6 +982,34 @@ el.webSearch.onchange = () => { state.webSearch = el.webSearch.checked; LS.set("
 el.writingRoom.onchange = () => { state.writingRoom = el.writingRoom.checked; LS.set("gamma.writingRoom", state.writingRoom); syncControls(); };
 el.streamThink.onchange = () => { state.streamThink = el.streamThink.checked; LS.set("gamma.streamThink", state.streamThink); };
 el.autoDream.onchange = () => { state.autoDream = el.autoDream.checked; LS.set("gamma.autoDream", state.autoDream); };
+el.headroomEnabled.onchange = () => {
+  state.headroomEnabled = el.headroomEnabled.checked;
+  LS.set("gamma.headroomEnabled", state.headroomEnabled);
+};
+el.contextWindow.onchange = () => {
+  const v = parseInt(el.contextWindow.value, 10);
+  state.contextWindow = (Number.isFinite(v) && v > 0) ? v : 128000;
+  el.contextWindow.value = state.contextWindow;
+  LS.set("gamma.contextWindow", state.contextWindow);
+  updateHeadroomUI();
+};
+el.compressNow.onclick = async () => {
+  if (busy) { alert("Wait for the current response to finish first."); return; }
+  if (!state.apiKey) { alert("Add your Z.ai API key in the sidebar first."); el.apiKey.focus(); return; }
+  currentAbort = new AbortController();
+  setBusy(true);
+  el.compressNow.disabled = true; el.compressNow.textContent = "Compressing…";
+  try {
+    const stats = await runCompression();
+    if (!stats) addCompressionMessage("Nothing to compress yet — not enough earlier conversation to fold.", null);
+  } catch (err) {
+    if (err.name !== "AbortError") alert("Compression failed: " + err.message);
+  } finally {
+    setBusy(false); currentAbort = null;
+    el.compressNow.disabled = false; el.compressNow.textContent = "🗜️ Compress now";
+    updateHeadroomUI();
+  }
+};
 
 function triggerCommand(name) {
   if (busy) { alert("Wait for the current response to finish first."); return; }
@@ -1472,11 +1550,16 @@ let currentAbort = null;
 function buildMessages(extraSystem) {
   const msgs = [];
   const ap = activePromptObj();
-  const sys = [ap ? ap.body : "", memoryBlock(), extraSystem || ""].filter(Boolean).join("\n\n");
+  const hr = headroomFor(currentChat());
+  const sysParts = [ap ? ap.body : "", memoryBlock(), extraSystem || ""];
+  if (hr.summary) sysParts.push("## Earlier in this conversation (compressed by Headroom)\n" + hr.summary);
+  const sys = sysParts.filter(Boolean).join("\n\n");
   if (sys) msgs.push({ role: "system", content: sys });
-  for (const m of messages()) {
-    // Memory confirmations are UI-only notes; they aren't part of the dialogue.
-    if (m.kind === "memory") continue;
+  const all = messages();
+  for (let i = hr.compressedCount; i < all.length; i++) {
+    const m = all[i];
+    // Memory/compression confirmations are UI-only notes; they aren't part of the dialogue.
+    if (m.kind === "memory" || m.kind === "compression") continue;
     msgs.push({ role: m.role, content: m.content });
   }
   return msgs;
@@ -1490,6 +1573,7 @@ function memoryBlock() {
 }
 
 async function runNormal(userText) {
+  await maybeCompress();
   const { wrap, slots } = addAssistantMessage();
   const extraSystem = await maybeWebSearch(slots, userText, state.webSearch, currentAbort.signal);
   let think = null;
@@ -1804,7 +1888,7 @@ function addMemoryMessage(text, reasoning) {
 }
 
 async function runRemember(hint) {
-  const convo = messages().filter(m => m.kind !== "memory")
+  const convo = messages().filter(m => m.kind !== "memory" && m.kind !== "compression")
     .slice(-30)
     .map(m => `${m.role === "user" ? "User" : "You"}: ${m.content}`).join("\n");
   if (!convo.trim() && !hint) {
@@ -1949,6 +2033,137 @@ function startMemoryEdit(row, m) {
     renderMemories(); syncControls();
   };
   cancelBtn.onclick = () => renderMemories();
+}
+
+/* =================================================================
+   Headroom — a context-window compressor.
+
+   Like an audio compressor keeps peaks under a ceiling, this keeps the
+   conversation under the model's context window: once the estimated size
+   of what we'd send crosses a threshold, the oldest turns (everything but
+   the last HEADROOM_KEEP_RECENT messages) are folded into a single rolling
+   summary instead of being resent verbatim. The full transcript stays
+   visible in the UI — only what's sent to the API shrinks.
+================================================================= */
+const HEADROOM_KEEP_RECENT = 6;   // most recent messages always sent verbatim
+const HEADROOM_THRESHOLD = 0.7;   // compress once estimated usage crosses this fraction of the window
+const HEADROOM_MIN_FOLD = 4;      // don't bother compressing fewer messages than this
+
+const HEADROOM_SYS =
+  "You are compressing the early part of a long conversation so it takes less " +
+  "context space, without losing anything the assistant needs to keep replying " +
+  "consistently: durable facts, decisions, names, ongoing tasks, and the user's " +
+  "tone/intent. Drop small talk, pleasantries, and anything superseded by later " +
+  "messages. Write a dense, third-person recap, not a transcript. Be concise but " +
+  "do not omit load-bearing details. Output only the summary, no preamble.";
+
+function headroomFor(chat) {
+  if (!chat.headroom) chat.headroom = { compressedCount: 0, summary: "", lastStats: null };
+  return chat.headroom;
+}
+
+/** Rough chars/4 token estimate — there's no real tokenizer available client-side,
+ *  so this is an approximation the tracker labels as such. */
+function estimateTokens(text) { return text ? Math.ceil(text.length / 4) + 3 : 0; }
+
+function contextUsage() {
+  const tokens = buildMessages().reduce((s, m) => s + estimateTokens(m.content), 0);
+  const window = state.contextWindow || 128000;
+  return { tokens, window, pct: window > 0 ? Math.round((tokens / window) * 100) : 0 };
+}
+
+/** Folds everything but the most recent HEADROOM_KEEP_RECENT messages into the
+ *  chat's rolling summary. Returns compression stats, or null if there wasn't
+ *  enough earlier conversation to bother folding. */
+async function runCompression() {
+  const chat = currentChat();
+  const hr = headroomFor(chat);
+  const all = messages();
+  const endIdx = Math.max(hr.compressedCount, all.length - HEADROOM_KEEP_RECENT);
+  const slice = all.slice(hr.compressedCount, endIdx).filter(m => m.kind !== "memory" && m.kind !== "compression");
+  if (slice.length < HEADROOM_MIN_FOLD) return null;
+
+  const before = estimateTokens(hr.summary) + slice.reduce((s, m) => s + estimateTokens(m.content), 0);
+  const transcript = slice.map(m => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`).join("\n\n");
+  const user = (hr.summary ? `Existing summary of everything earlier:\n${hr.summary}\n\n` : "") +
+    `Conversation to fold into the summary:\n${transcript}\n\nWrite the new combined summary.`;
+
+  const { content } = await streamGLM({
+    messages: [{ role: "system", content: HEADROOM_SYS }, { role: "user", content: user }],
+    temperature: 0.2,
+    onContent: () => {},
+    signal: currentAbort ? currentAbort.signal : undefined,
+  });
+  const summary = (content || "").trim();
+  if (!summary) return null;
+
+  const after = estimateTokens(summary);
+  hr.summary = summary;
+  hr.compressedCount = endIdx;
+  const stats = {
+    at: Date.now(),
+    originalTokens: before,
+    compressedTokens: after,
+    percent: before > 0 ? Math.round((1 - after / before) * 100) : 0,
+    foldedMessages: slice.length,
+  };
+  hr.lastStats = stats;
+
+  const note = `Folded ${slice.length} earlier message${slice.length === 1 ? "" : "s"} into a summary — ` +
+    `~${stats.originalTokens.toLocaleString()} → ~${stats.compressedTokens.toLocaleString()} tokens ` +
+    `(${stats.percent >= 0 ? "-" : "+"}${Math.abs(stats.percent)}%).`;
+  addCompressionMessage(note, stats);
+  messages().push({ role: "assistant", content: note, kind: "compression", stats });
+  touchChat();
+  return stats;
+}
+
+/** Auto-compress hook, called before each normal turn. No-ops unless enabled
+ *  and usage has crossed the threshold; failures are swallowed so a flaky
+ *  compression call never blocks the actual reply. */
+async function maybeCompress() {
+  if (!state.headroomEnabled) return;
+  if (contextUsage().pct < HEADROOM_THRESHOLD * 100) return;
+  try { await runCompression(); } catch (err) { console.warn("Headroom auto-compress failed:", err); }
+}
+
+/** Renders a finished compression note (used on reload and after compressing). */
+function addCompressionMessage(text, stats) {
+  el.empty.style.display = "none";
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap";
+  const tag = "🗜️ COMPRESSED" + (stats ? ` · -${Math.max(0, stats.percent)}%` : "");
+  wrap.innerHTML = `<div class="msg">
+      <div class="avatar hr">🗜️</div>
+      <div class="body"><div class="who">Headroom</div>
+        <div class="headroom-block"><span class="headroom-tag">${escapeHtml(tag)}</span><div class="content"></div></div>
+      </div>
+    </div>`;
+  wrap.querySelector(".content").innerHTML = renderMd(text);
+  el.messages.appendChild(wrap);
+}
+
+/** Refreshes the topbar pill + sidebar meter from the current chat's estimated usage. */
+function updateHeadroomUI() {
+  const usage = contextUsage();
+  const hot = usage.pct >= HEADROOM_THRESHOLD * 100;
+
+  el.headroomPill.textContent = "ctx ~" + usage.pct + "%";
+  el.headroomPill.title = `~${usage.tokens.toLocaleString()} / ${usage.window.toLocaleString()} tokens (estimated)`;
+  el.headroomPill.classList.toggle("warn", hot);
+  el.headroomPill.classList.toggle("on", !hot && usage.pct > 0);
+
+  el.headroomUsageLabel.textContent = `Context used: ~${usage.pct}%`;
+  el.headroomTokensLabel.textContent = `~${usage.tokens.toLocaleString()} / ${usage.window.toLocaleString()} tok`;
+  el.headroomMeterBar.style.width = Math.min(100, usage.pct) + "%";
+  el.headroomMeter.classList.toggle("warn", hot);
+
+  const hr = headroomFor(currentChat());
+  el.headroomStatsLabel.textContent = hr.lastStats
+    ? `Last compression: ${hr.lastStats.foldedMessages} message${hr.lastStats.foldedMessages === 1 ? "" : "s"} folded · ` +
+      `~${hr.lastStats.originalTokens.toLocaleString()} → ~${hr.lastStats.compressedTokens.toLocaleString()} tok ` +
+      `(${hr.lastStats.percent >= 0 ? "-" : "+"}${Math.abs(hr.lastStats.percent)}%)`
+    : "No compression yet — plenty of headroom.";
 }
 
 /* =================================================================
