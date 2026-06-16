@@ -234,6 +234,23 @@
     .scrim.show { display: block; }
   }
   .menu-btn { display: none; width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); place-items: center; cursor: pointer; }
+
+  /* ---- Message actions ---- */
+  .msg-actions { display: flex; gap: 6px; margin-top: 8px; opacity: 0; transition: opacity .15s; }
+  .msg-wrap:hover .msg-actions, .msg-wrap:focus-within .msg-actions { opacity: 1; }
+  .msg-action-btn {
+    background: var(--bg-3); border: 1px solid var(--border); color: var(--text-dim);
+    border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer;
+    font-family: var(--sans); transition: .15s;
+  }
+  .msg-action-btn:hover { border-color: var(--accent); color: var(--text); }
+  .msg-action-btn.ok { color: var(--good); border-color: #2a5a47; }
+  .edit-area {
+    width: 100%; min-height: 120px; resize: vertical;
+    background: var(--bg-2); border: 1px solid var(--accent); color: var(--text);
+    border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 13px;
+    line-height: 1.5; outline: none; display: block;
+  }
 </style>
 </head>
 <body>
@@ -924,6 +941,7 @@ function addUserMessage(text) {
     </div>`;
   wrap.querySelector(".content").innerHTML = renderMd(text);
   el.messages.appendChild(wrap);
+  addMsgActions(wrap, "user");
   scrollToBottom();
 }
 
@@ -953,6 +971,7 @@ function addStaticAssistant(text) {
     </div>`;
   wrap.querySelector(".content").innerHTML = renderMd(text);
   el.messages.appendChild(wrap);
+  addMsgActions(wrap, "assistant");
 }
 
 /** A collapsible thinking block. */
@@ -1008,6 +1027,125 @@ function showError(slots, msg) {
   e.textContent = "⚠ " + msg;
   slots.appendChild(e);
   scrollToBottom();
+}
+
+/* =================================================================
+   Message actions (Copy / Edit / Regenerate)
+================================================================= */
+function getMsgIndex(wrap) {
+  return Array.from(el.messages.querySelectorAll(".msg-wrap")).indexOf(wrap);
+}
+
+function addMsgActions(wrap, role) {
+  const body = wrap.querySelector(".body");
+  const actRow = document.createElement("div");
+  actRow.className = "msg-actions";
+
+  // Copy
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "msg-action-btn";
+  copyBtn.textContent = "Copy";
+  copyBtn.title = "Copy to clipboard";
+  copyBtn.onclick = async () => {
+    const idx = getMsgIndex(wrap);
+    if (idx === -1) return;
+    const text = messages()[idx].content;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.cssText = "position:fixed;opacity:0;";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch {}
+      ta.remove();
+    }
+    copyBtn.textContent = "Copied!";
+    copyBtn.classList.add("ok");
+    setTimeout(() => { copyBtn.textContent = "Copy"; copyBtn.classList.remove("ok"); }, 1500);
+  };
+  actRow.appendChild(copyBtn);
+
+  // Edit
+  const editBtn = document.createElement("button");
+  editBtn.className = "msg-action-btn";
+  editBtn.textContent = "Edit";
+  editBtn.title = role === "user" ? "Load into input for editing" : "Edit this response";
+  editBtn.onclick = () => {
+    if (busy) return;
+    const idx = getMsgIndex(wrap);
+    if (idx === -1) return;
+    if (role === "user") {
+      el.input.value = messages()[idx].content;
+      autoGrow();
+      messages().splice(idx);
+      saveChats();
+      renderChat();
+      el.input.focus();
+      el.input.selectionStart = el.input.selectionEnd = el.input.value.length;
+    } else {
+      // Inline edit of assistant response
+      const currentText = messages()[idx].content;
+      const slot = wrap.querySelector(".slots") || wrap.querySelector(".content");
+      const origHTML = slot.innerHTML;
+      slot.innerHTML = "";
+
+      const ta = document.createElement("textarea");
+      ta.className = "edit-area";
+      ta.value = currentText;
+
+      const btnRow = document.createElement("div");
+      btnRow.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+      const saveBtn = document.createElement("button");
+      saveBtn.className = "btn primary sm"; saveBtn.textContent = "Save";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn sm"; cancelBtn.textContent = "Cancel";
+      btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
+      slot.appendChild(ta); slot.appendChild(btnRow);
+      ta.focus();
+
+      saveBtn.onclick = () => {
+        const newText = ta.value;
+        if (!newText.trim()) return;
+        messages()[idx].content = newText;
+        saveChats();
+        renderChat();
+      };
+      cancelBtn.onclick = () => { slot.innerHTML = origHTML; };
+    }
+  };
+  actRow.appendChild(editBtn);
+
+  // Regenerate
+  const regenBtn = document.createElement("button");
+  regenBtn.className = "msg-action-btn";
+  regenBtn.textContent = "Regenerate";
+  regenBtn.title = role === "user" ? "Re-run AI from this message" : "Regenerate this response";
+  regenBtn.onclick = async () => {
+    if (busy) return;
+    const idx = getMsgIndex(wrap);
+    if (idx === -1) return;
+    let userText;
+    if (role === "user") {
+      userText = messages()[idx].content;
+      messages().splice(idx + 1);
+    } else {
+      if (idx === 0 || messages()[idx - 1].role !== "user") return;
+      userText = messages()[idx - 1].content;
+      messages().splice(idx);
+    }
+    saveChats();
+    renderChat();
+    currentAbort = new AbortController();
+    setBusy(true);
+    try {
+      if (state.writingRoom) await runWritingRoom(userText);
+      else await runNormal(userText);
+    } catch (_) {}
+    finally { setBusy(false); currentAbort = null; }
+  };
+  actRow.appendChild(regenBtn);
+
+  body.appendChild(actRow);
 }
 
 /* =================================================================
@@ -1092,7 +1230,7 @@ function buildMessages(extraSystem) {
 }
 
 async function runNormal(userText) {
-  const { slots } = addAssistantMessage();
+  const { wrap, slots } = addAssistantMessage();
   let think = null;
   if (state.streamThink) think = makeThinkBlock(slots, "Thinking…");
   const out = makeContentBlock(slots);
@@ -1109,6 +1247,7 @@ async function runNormal(userText) {
     out.done();
     messages().push({ role: "assistant", content: content || "*(no content returned)*" });
     touchChat();
+    addMsgActions(wrap, "assistant");
   } catch (err) {
     if (think) think.hideIfEmpty();
     if (err.name === "AbortError") { out.append("\n\n_(stopped)_"); out.done(); }
@@ -1148,7 +1287,7 @@ function roomStage(key) {
 }
 
 async function runWritingRoom(userText) {
-  const { slots } = addAssistantMessage();
+  const { wrap, slots } = addAssistantMessage();
   const ap = activePromptObj();
   const baseSys = ap ? ap.body + "\n\n" : "";
   const artifacts = {};
@@ -1213,6 +1352,7 @@ async function runWritingRoom(userText) {
     messages().push({ role: "assistant", content: finalText ||
       "*(Writing Room produced no final text.)*" });
     touchChat();
+    addMsgActions(wrap, "assistant");
   } catch (err) {
     if (err.name === "AbortError") { showError(slots, "Writing Room stopped."); }
     else { showError(slots, err.message); }
