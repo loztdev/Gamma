@@ -259,6 +259,31 @@
   .hint { font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 8px; }
   .hint b { color: var(--text); }
 
+  .attach-btn {
+    width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); flex-shrink: 0;
+    background: var(--bg-3); color: var(--text); cursor: pointer; font-size: 16px; display: grid; place-items: center;
+  }
+  .attach-btn:hover { border-color: var(--accent); }
+  .attach-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .input-box.drag-over { border-color: var(--accent); background: #18233a; }
+
+  .pending-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .pending-attachments:empty { display: none; margin: 0; }
+  .attach-chip {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 4px 8px 4px 4px; font-size: 12px;
+  }
+  .attach-chip img { width: 28px; height: 28px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+  .attach-chip .file-ico { width: 28px; height: 28px; border-radius: 6px; background: var(--bg-3); display: grid; place-items: center; flex-shrink: 0; font-size: 14px; }
+  .attach-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+  .attach-chip .rm { cursor: pointer; color: var(--text-dim); font-size: 13px; line-height: 1; flex-shrink: 0; padding: 2px; }
+  .attach-chip .rm:hover { color: #ff8585; }
+
+  .msg-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .msg-images:empty { display: none; margin: 0; }
+  .msg-images img { max-width: 220px; max-height: 220px; border-radius: 10px; border: 1px solid var(--border); cursor: zoom-in; display: block; }
+
   .err { color: #ff8585; background: #2a1515; border: 1px solid #5a2a2a; padding: 10px 14px; border-radius: 10px; font-size: 13px; }
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -325,6 +350,11 @@
         <span>Model ID</span>
         <input type="text" id="modelId" value="glm-5.2" />
       </label>
+      <label class="field">
+        <span>Vision model ID</span>
+        <input type="text" id="visionModelId" value="glm-5v-turbo" />
+      </label>
+      <div style="font-size:11px;color:var(--text-dim);margin:-6px 0 10px;">Used automatically instead of Model ID whenever a message has image attachments.</div>
       <label class="field">
         <span>Plan / endpoint</span>
         <select id="planSelect">
@@ -481,11 +511,14 @@
 
     <div class="composer">
       <div class="composer-inner">
-        <div class="input-box">
+        <div class="pending-attachments" id="pendingAttachments"></div>
+        <div class="input-box" id="inputBox">
+          <button class="attach-btn" id="attachBtn" type="button" title="Attach images or files">📎</button>
           <textarea id="input" rows="1" placeholder="Message GLM-5.2…  (Enter to send, Shift+Enter for newline)"></textarea>
+          <input type="file" id="fileInput" multiple hidden accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.js,.jsx,.ts,.tsx,.py,.go,.rs,.java,.c,.cpp,.h,.hpp,.cs,.css,.html,.xml,.yaml,.yml,.sh,.rb,.php,.sql,.toml,.ini" />
           <button class="send-btn" id="send" title="Send">➤</button>
         </div>
-        <div class="hint">Try <b>/dream</b> to drift, <b>/remember</b> to keep what matters. Your data stays in <b>this browser only</b> (localStorage). Powered by Z.ai GLM-5.2.</div>
+        <div class="hint">Try <b>/dream</b> to drift, <b>/remember</b> to keep what matters. Attach 📎 images for vision (auto-switches to the vision model) or text/code files for context. Your data stays in <b>this browser only</b> (localStorage). Powered by Z.ai GLM-5.2.</div>
       </div>
     </div>
   </main>
@@ -498,12 +531,18 @@
 ================================================================= */
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+  // Attachments (esp. images) can push saved chats past the localStorage quota;
+  // fail soft rather than throwing out of unrelated call sites like touchChat().
+  set(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); }
+    catch (err) { console.warn(`Gamma: couldn't save "${k}" to localStorage`, err); }
+  }
 };
 
 const state = {
   apiKey: LS.get("gamma.apiKey", ""),
   modelId: LS.get("gamma.modelId", "glm-5.2"),
+  visionModelId: LS.get("gamma.visionModelId", "glm-5v-turbo"),
   baseUrl: LS.get("gamma.baseUrl", "https://api.z.ai/api/paas/v4/chat/completions"),
   prompts: LS.get("gamma.prompts", []),          // [{id,name,body}]
   activePrompt: LS.get("gamma.activePrompt", null),
@@ -534,7 +573,7 @@ const fileHandles = new Map();
 ================================================================= */
 const $ = (id) => document.getElementById(id);
 const el = {
-  apiKey: $("apiKey"), modelId: $("modelId"), baseUrl: $("baseUrl"), planSelect: $("planSelect"),
+  apiKey: $("apiKey"), modelId: $("modelId"), visionModelId: $("visionModelId"), baseUrl: $("baseUrl"), planSelect: $("planSelect"),
   newChat: $("newChat"), saveChatFile: $("saveChatFile"), openChatFile: $("openChatFile"), chatList: $("chatList"),
   promptList: $("promptList"), promptName: $("promptName"), promptBody: $("promptBody"),
   savePrompt: $("savePrompt"), newPrompt: $("newPrompt"),
@@ -551,6 +590,7 @@ const el = {
   clearChat: $("clearChat"),
   messages: $("messages"), empty: $("empty"),
   input: $("input"), send: $("send"),
+  inputBox: $("inputBox"), attachBtn: $("attachBtn"), fileInput: $("fileInput"), pendingAttachments: $("pendingAttachments"),
   modelPill: $("modelPill"), planPill: $("planPill"), webPill: $("webPill"), roomPill: $("roomPill"), sysPill: $("sysPill"),
   headroomPill: $("headroomPill"),
   menuBtn: $("menuBtn"), sidebar: $("sidebar"), scrim: $("scrim"),
@@ -575,6 +615,7 @@ function renderMd(text) {
 function syncControls() {
   el.apiKey.value = state.apiKey;
   el.modelId.value = state.modelId;
+  el.visionModelId.value = state.visionModelId;
   el.baseUrl.value = state.baseUrl;
   // reflect endpoint in the plan dropdown (preset match, else "custom")
   const presetMatch = Array.from(el.planSelect.options).some(o => o.value === state.baseUrl);
@@ -597,6 +638,8 @@ function syncControls() {
   el.webPill.classList.toggle("on", state.webSearch);
   el.roomPill.textContent = state.writingRoom ? "writing room" : "room off";
   el.roomPill.classList.toggle("on", state.writingRoom);
+  el.attachBtn.disabled = state.writingRoom;
+  el.attachBtn.title = state.writingRoom ? "Attachments aren't available in Writing Room mode" : "Attach images or files";
   const ap = activePromptObj();
   el.sysPill.textContent = ap ? "System: " + ap.name : "No system prompt";
 }
@@ -708,7 +751,7 @@ function renderChat() {
   if (!msgs.length) { el.empty.style.display = ""; return; }
   el.empty.style.display = "none";
   for (const m of msgs) {
-    if (m.role === "user") addUserMessage(m.content);
+    if (m.role === "user") addUserMessage(m.content, m.images);
     else if (m.kind === "dream") addDreamMessage(m.content);
     else if (m.kind === "memory") addMemoryMessage(m.content, m.reasoning);
     else if (m.kind === "compression") addCompressionMessage(m.content, m.stats);
@@ -978,6 +1021,7 @@ function escapeHtml(s) { return (s || "").replace(/[&<>"]/g, c => ({ "&":"&amp;"
 ================================================================= */
 el.apiKey.oninput = () => { state.apiKey = el.apiKey.value.trim(); LS.set("gamma.apiKey", state.apiKey); };
 el.modelId.oninput = () => { state.modelId = el.modelId.value.trim() || "glm-5.2"; LS.set("gamma.modelId", state.modelId); syncControls(); };
+el.visionModelId.oninput = () => { state.visionModelId = el.visionModelId.value.trim() || "glm-5v-turbo"; LS.set("gamma.visionModelId", state.visionModelId); };
 el.baseUrl.oninput = () => { state.baseUrl = el.baseUrl.value.trim(); LS.set("gamma.baseUrl", state.baseUrl); syncControls(); };
 el.planSelect.onchange = () => {
   if (el.planSelect.value === "custom") { el.baseUrl.focus(); return; }
@@ -1116,20 +1160,142 @@ el.input.addEventListener("keydown", (e) => {
 });
 
 /* =================================================================
+   Composer attachments — images (sent to the vision model) and
+   text/code files (inlined into the message as a fenced block).
+================================================================= */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;      // 8MB raw image file
+const MAX_TEXT_FILE_CHARS = 200000;           // generous cap for code/notes
+const TEXT_FILE_EXT = /\.(txt|md|markdown|json|csv|log|js|jsx|ts|tsx|py|go|rs|java|c|cpp|h|hpp|cs|css|html?|xml|ya?ml|sh|rb|php|sql|toml|ini|env)$/i;
+
+let pendingAttachments = []; // [{id, kind:'image', name, mime, dataUrl} | {id, kind:'file', name, mime, text, truncated}]
+
+function rid() { return "a_" + Math.random().toString(36).slice(2, 10); }
+
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error("Could not read file"));
+    r.readAsDataURL(file);
+  });
+}
+function readAsText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error("Could not read file"));
+    r.readAsText(file);
+  });
+}
+
+/** Classifies and reads dropped/picked/pasted files into pendingAttachments. */
+async function handleFiles(fileList) {
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    try {
+      if (file.type.startsWith("image/")) {
+        if (file.size > MAX_IMAGE_BYTES) {
+          alert(`"${file.name}" is over the 8MB image limit and was skipped.`);
+          continue;
+        }
+        const dataUrl = await readAsDataURL(file);
+        pendingAttachments.push({ id: rid(), kind: "image", name: file.name, mime: file.type, dataUrl });
+      } else if (file.type.startsWith("text/") || TEXT_FILE_EXT.test(file.name)) {
+        let text = await readAsText(file);
+        let truncated = false;
+        if (text.length > MAX_TEXT_FILE_CHARS) { text = text.slice(0, MAX_TEXT_FILE_CHARS); truncated = true; }
+        pendingAttachments.push({ id: rid(), kind: "file", name: file.name, mime: file.type || "text/plain", text, truncated });
+      } else {
+        alert(`"${file.name}" isn't an image or a recognized text/code file, so it was skipped.`);
+      }
+    } catch (err) {
+      alert(`Couldn't read "${file.name}": ${err.message}`);
+    }
+  }
+  renderPendingAttachments();
+}
+
+function removePendingAttachment(id) {
+  pendingAttachments = pendingAttachments.filter(a => a.id !== id);
+  renderPendingAttachments();
+}
+function clearPendingAttachments() { pendingAttachments = []; renderPendingAttachments(); }
+
+function renderPendingAttachments() {
+  el.pendingAttachments.innerHTML = "";
+  for (const a of pendingAttachments) {
+    const chip = document.createElement("div");
+    chip.className = "attach-chip";
+    chip.innerHTML = a.kind === "image"
+      ? `<img src="${a.dataUrl}" alt=""><span class="name"></span><span class="rm" title="Remove">✕</span>`
+      : `<span class="file-ico">📄</span><span class="name"></span><span class="rm" title="Remove">✕</span>`;
+    chip.querySelector(".name").textContent = a.name;
+    chip.querySelector(".rm").onclick = () => removePendingAttachment(a.id);
+    el.pendingAttachments.appendChild(chip);
+  }
+}
+
+/** Wraps a text-file attachment as a labelled fenced block appended to the message text. */
+function fileAttachmentBlock(a) {
+  const note = a.truncated ? ` (truncated to ${MAX_TEXT_FILE_CHARS.toLocaleString()} chars)` : "";
+  return `**Attached file: ${a.name}${note}**\n\`\`\`\n${a.text}\n\`\`\``;
+}
+
+function attachmentsBlocked() {
+  if (state.writingRoom) { alert("Attachments aren't sent in Writing Room mode yet — turn it off first."); return true; }
+  return false;
+}
+
+el.attachBtn.onclick = () => { if (!attachmentsBlocked()) el.fileInput.click(); };
+el.fileInput.onchange = async () => { await handleFiles(el.fileInput.files); el.fileInput.value = ""; };
+
+["dragover", "dragenter"].forEach(evt => el.inputBox.addEventListener(evt, (e) => {
+  e.preventDefault();
+  el.inputBox.classList.add("drag-over");
+}));
+["dragleave", "dragend"].forEach(evt => el.inputBox.addEventListener(evt, () => el.inputBox.classList.remove("drag-over")));
+el.inputBox.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  el.inputBox.classList.remove("drag-over");
+  if (attachmentsBlocked()) return;
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) await handleFiles(e.dataTransfer.files);
+});
+
+el.input.addEventListener("paste", async (e) => {
+  if (state.writingRoom) return;
+  const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
+  const files = items.filter(it => it.kind === "file").map(it => it.getAsFile()).filter(Boolean);
+  if (!files.length) return;
+  e.preventDefault();
+  await handleFiles(files);
+});
+
+/* =================================================================
    DOM builders for chat
 ================================================================= */
 let followAlong = true;
 function scrollToBottom() { if (followAlong) el.messages.scrollTop = el.messages.scrollHeight; }
 
-function addUserMessage(text) {
+function addUserMessage(text, images) {
   followAlong = true;
   el.empty.style.display = "none";
   const wrap = document.createElement("div");
   wrap.className = "msg-wrap";
   wrap.innerHTML = `<div class="msg">
       <div class="avatar user">You</div>
-      <div class="body"><div class="who">You</div><div class="content"></div></div>
+      <div class="body"><div class="who">You</div><div class="msg-images"></div><div class="content"></div></div>
     </div>`;
+  if (images && images.length) {
+    const row = wrap.querySelector(".msg-images");
+    for (const img of images) {
+      const im = document.createElement("img");
+      im.src = img.dataUrl;
+      im.alt = img.name || "attached image";
+      im.title = img.name || "";
+      im.onclick = () => window.open(img.dataUrl, "_blank");
+      row.appendChild(im);
+    }
+  }
   wrap.querySelector(".content").innerHTML = renderMd(text);
   el.messages.appendChild(wrap);
   addMsgActions(wrap, "user");
@@ -1266,7 +1432,12 @@ function addMsgActions(wrap, role) {
     const idx = getMsgIndex(wrap);
     if (idx === -1) return;
     if (role === "user") {
-      el.input.value = messages()[idx].content;
+      const m = messages()[idx];
+      el.input.value = m.content;
+      if (m.images && m.images.length) {
+        pendingAttachments = m.images.map(img => ({ id: rid(), kind: "image", name: img.name, mime: img.mime, dataUrl: img.dataUrl }));
+        renderPendingAttachments();
+      }
       autoGrow();
       messages().splice(idx);
       saveChats();
@@ -1449,16 +1620,21 @@ const WEB_SEARCH_TOOL = {
 };
 const MAX_TOOL_ROUNDS = 4;
 
+/** True if any built API message carries image_url parts — used to switch to the vision model. */
+function hasImageContent(apiMessages) {
+  return apiMessages.some(m => Array.isArray(m.content) && m.content.some(p => p && p.type === "image_url"));
+}
+
 /* =================================================================
    Z.ai GLM streaming call
    Yields {type:'thinking'|'content', text} via onDelta callback.
    Returns {content, reasoning, toolCalls, finishReason}.
 ================================================================= */
-async function streamGLM({ messages, tools, onThink, onContent, signal, temperature }) {
+async function streamGLM({ messages, tools, model, onThink, onContent, signal, temperature }) {
   if (!state.apiKey) throw new Error("Add your Z.ai API key in the sidebar first.");
 
   const body = {
-    model: state.modelId || "glm-5.2",
+    model: model || state.modelId || "glm-5.2",
     messages,
     stream: true,
     thinking: { type: "enabled" },
@@ -1546,7 +1722,15 @@ function buildMessages(extraSystem) {
     const m = all[i];
     // Memory/compression confirmations are UI-only notes; they aren't part of the dialogue.
     if (m.kind === "memory" || m.kind === "compression") continue;
-    msgs.push({ role: m.role, content: m.content });
+    if (m.images && m.images.length) {
+      // OpenAI-compatible vision content: a mix of text + image_url parts.
+      const parts = [];
+      if (m.content) parts.push({ type: "text", text: m.content });
+      for (const img of m.images) parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+      msgs.push({ role: m.role, content: parts });
+    } else {
+      msgs.push({ role: m.role, content: m.content });
+    }
   }
   return msgs;
 }
@@ -1564,6 +1748,7 @@ async function runToolCallTurn(apiMessages, slots, signal) {
   const out = makeContentBlock(slots);
   let think = null;
   const useTools = state.webSearch ? [WEB_SEARCH_TOOL] : undefined;
+  const model = hasImageContent(apiMessages) ? (state.visionModelId || "glm-5v-turbo") : undefined;
 
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -1571,6 +1756,7 @@ async function runToolCallTurn(apiMessages, slots, signal) {
       const { content, toolCalls, finishReason } = await streamGLM({
         messages: apiMessages,
         tools: useTools,
+        model,
         onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
         onContent: (t) => out.append(t),
         signal,
@@ -1613,6 +1799,7 @@ async function runToolCallTurn(apiMessages, slots, signal) {
     // Hit the round cap — ask once more without tools to force a final answer.
     const { content } = await streamGLM({
       messages: apiMessages,
+      model,
       onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
       onContent: (t) => out.append(t),
       signal,
@@ -2104,8 +2291,19 @@ function headroomFor(chat) {
 }
 
 /** Rough chars/4 token estimate — there's no real tokenizer available client-side,
- *  so this is an approximation the tracker labels as such. */
-function estimateTokens(text) { return text ? Math.ceil(text.length / 4) + 3 : 0; }
+ *  so this is an approximation the tracker labels as such. Vision content arrays
+ *  (text + image_url parts) get a flat per-image estimate added in. */
+function estimateTokens(content) {
+  if (!content) return 0;
+  if (Array.isArray(content)) {
+    return content.reduce((s, part) => {
+      if (!part) return s;
+      if (part.type === "image_url") return s + 1500;
+      return s + estimateTokens(part.text);
+    }, 0);
+  }
+  return Math.ceil(content.length / 4) + 3;
+}
 
 function contextUsage() {
   const tokens = buildMessages().reduce((s, m) => s + estimateTokens(m.content), 0);
@@ -2220,21 +2418,26 @@ function setBusy(b) {
 
 async function onSend() {
   if (busy) { if (currentAbort) currentAbort.abort(); return; }
-  const text = el.input.value.trim();
-  if (!text) return;
+  const typed = el.input.value.trim();
+  const images = pendingAttachments.filter(a => a.kind === "image");
+  const files = pendingAttachments.filter(a => a.kind === "file");
+  if (!typed && !images.length && !files.length) return;
   if (!state.apiKey) { alert("Add your Z.ai API key in the sidebar first."); el.apiKey.focus(); return; }
 
   // Slash commands (/dream, /remember) don't enter the dialogue as user turns.
-  const cmd = parseCommand(text);
+  const cmd = parseCommand(typed);
   if (cmd && (cmd.name === "dream" || cmd.name === "remember")) {
     el.input.value = ""; autoGrow();
     await runCommand(cmd);
     return;
   }
 
+  const text = [typed, ...files.map(fileAttachmentBlock)].filter(Boolean).join("\n\n");
+  const imageRecords = images.map(a => ({ name: a.name, mime: a.mime, dataUrl: a.dataUrl }));
   el.input.value = ""; autoGrow();
-  addUserMessage(text);
-  messages().push({ role: "user", content: text });
+  clearPendingAttachments();
+  addUserMessage(text, imageRecords);
+  messages().push(Object.assign({ role: "user", content: text }, imageRecords.length ? { images: imageRecords } : {}));
   touchChat();
 
   currentAbort = new AbortController();
