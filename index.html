@@ -347,7 +347,7 @@
       <div class="toggle-row">
         <div>
           <div class="lbl">Web search</div>
-          <div class="desc">Let GLM look things up live</div>
+          <div class="desc">GLM decides when to look things up live</div>
         </div>
         <label class="switch"><input type="checkbox" id="webSearch" /><span class="slider"></span></label>
       </div>
@@ -1350,12 +1350,33 @@ async function maybeWebSearch(parent, query, enabled, signal) {
   }
 }
 
+// Lets the model decide for itself whether/what to search, instead of the
+// app always pre-searching the user's raw message before the model sees it.
+const WEB_SEARCH_TOOL = {
+  type: "function",
+  function: {
+    name: "web_search",
+    description: "Search the live web for current or factual information you might not know or might have wrong. Call this whenever it would help answer the user accurately.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "A concise, well-formed search query capturing what to look up — rephrase the user's request into good search terms rather than passing it verbatim.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+};
+const MAX_TOOL_ROUNDS = 4;
+
 /* =================================================================
    Z.ai GLM streaming call
    Yields {type:'thinking'|'content', text} via onDelta callback.
-   Returns {content, reasoning}.
+   Returns {content, reasoning, toolCalls, finishReason}.
 ================================================================= */
-async function streamGLM({ messages, onThink, onContent, signal, temperature }) {
+async function streamGLM({ messages, tools, onThink, onContent, signal, temperature }) {
   if (!state.apiKey) throw new Error("Add your Z.ai API key in the sidebar first.");
 
   const body = {
@@ -1365,6 +1386,7 @@ async function streamGLM({ messages, onThink, onContent, signal, temperature }) 
     thinking: { type: "enabled" },
   };
   if (typeof temperature === "number") body.temperature = temperature;
+  if (tools && tools.length) { body.tools = tools; body.tool_choice = "auto"; }
 
   const res = await fetch(state.baseUrl, {
     method: "POST",
@@ -1388,6 +1410,8 @@ async function streamGLM({ messages, onThink, onContent, signal, temperature }) 
   const decoder = new TextDecoder();
   let buffer = "";
   let content = "", reasoning = "";
+  const toolCalls = [];
+  let finishReason = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -1403,13 +1427,27 @@ async function streamGLM({ messages, onThink, onContent, signal, temperature }) 
       if (data === "[DONE]") continue;
       let json;
       try { json = JSON.parse(data); } catch { continue; }
-      const delta = json.choices && json.choices[0] && json.choices[0].delta;
+      const choice = json.choices && json.choices[0];
+      if (!choice) continue;
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice.delta;
       if (!delta) continue;
       if (delta.reasoning_content) { reasoning += delta.reasoning_content; onThink && onThink(delta.reasoning_content); }
       if (delta.content) { content += delta.content; onContent && onContent(delta.content); }
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const i = tc.index || 0;
+          if (!toolCalls[i]) toolCalls[i] = { id: "", function: { name: "", arguments: "" } };
+          if (tc.id) toolCalls[i].id = tc.id;
+          if (tc.function) {
+            if (tc.function.name) toolCalls[i].function.name += tc.function.name;
+            if (tc.function.arguments) toolCalls[i].function.arguments += tc.function.arguments;
+          }
+        }
+      }
     }
   }
-  return { content, reasoning };
+  return { content, reasoning, toolCalls: toolCalls.filter(Boolean), finishReason };
 }
 
 /* =================================================================
@@ -1437,29 +1475,84 @@ function memoryBlock() {
   return "## Memories\nThings you remember from earlier conversations (treat as your own lasting recollections):\n" + lines;
 }
 
-async function runNormal(userText) {
-  const { wrap, slots } = addAssistantMessage();
-  const extraSystem = await maybeWebSearch(slots, userText, state.webSearch, currentAbort.signal);
-  let think = null;
-  if (state.streamThink) think = makeThinkBlock(slots, "Thinking…");
+/** Runs one assistant turn, letting the model call web_search itself (rather
+ *  than the app pre-searching the raw user message) when web search is on. */
+async function runToolCallTurn(apiMessages, slots, signal) {
   const out = makeContentBlock(slots);
+  let think = null;
+  const useTools = state.webSearch ? [WEB_SEARCH_TOOL] : undefined;
 
   try {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      think = null;
+      const { content, toolCalls, finishReason } = await streamGLM({
+        messages: apiMessages,
+        tools: useTools,
+        onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
+        onContent: (t) => out.append(t),
+        signal,
+      });
+      if (think) { think.done("Thought process"); think.hideIfEmpty(); }
+
+      if (finishReason !== "tool_calls" || !toolCalls.length) {
+        out.done();
+        return content || "";
+      }
+
+      const calls = toolCalls.map((tc, i) => ({
+        id: tc.id || `call_${round}_${i}`,
+        type: "function",
+        function: { name: tc.function.name, arguments: tc.function.arguments },
+      }));
+      apiMessages.push({ role: "assistant", content: content || "", tool_calls: calls });
+
+      for (const call of calls) {
+        let query = "";
+        try { query = JSON.parse(call.function.arguments || "{}").query || ""; } catch { query = call.function.arguments || ""; }
+        let resultText = `Unknown tool "${call.function.name}".`;
+        if (call.function.name === "web_search" && query.trim()) {
+          const label = query.length > 140 ? query.slice(0, 140) + "…" : query;
+          const ui = makeSearchBlock(slots, label);
+          try {
+            const results = await webSearchLookup(query, { signal });
+            ui.done(results);
+            resultText = webResultsToContext(query, results);
+          } catch (err) {
+            if (err.name === "AbortError") throw err;
+            ui.fail(err.message);
+            resultText = `Search failed: ${err.message}`;
+          }
+        }
+        apiMessages.push({ role: "tool", tool_call_id: call.id, content: resultText });
+      }
+    }
+
+    // Hit the round cap — ask once more without tools to force a final answer.
     const { content } = await streamGLM({
-      messages: buildMessages(extraSystem),
+      messages: apiMessages,
       onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
       onContent: (t) => out.append(t),
-      signal: currentAbort.signal,
+      signal,
     });
     if (think) { think.done("Thought process"); think.hideIfEmpty(); }
     out.done();
+    return content || "";
+  } catch (err) {
+    if (think) think.hideIfEmpty();
+    if (err.name === "AbortError") { out.append("\n\n_(stopped)_"); out.done(); }
+    throw err;
+  }
+}
+
+async function runNormal(userText) {
+  const { wrap, slots } = addAssistantMessage();
+  try {
+    const content = await runToolCallTurn(buildMessages(), slots, currentAbort.signal);
     messages().push({ role: "assistant", content: content || "*(no content returned)*" });
     touchChat();
     addMsgActions(wrap, "assistant");
   } catch (err) {
-    if (think) think.hideIfEmpty();
-    if (err.name === "AbortError") { out.append("\n\n_(stopped)_"); out.done(); }
-    else { showError(slots, err.message); }
+    if (err.name !== "AbortError") showError(slots, err.message);
     throw err;
   }
 }
