@@ -352,8 +352,8 @@
         <label class="switch"><input type="checkbox" id="webSearch" /><span class="slider"></span></label>
       </div>
       <label class="field">
-        <span>SearXNG instance URL (no key needed — swap if it stops working)</span>
-        <input type="text" id="searxUrl" placeholder="https://searx.be" />
+        <span>Search proxy URL (your own Cloudflare Worker — see search-proxy-worker.js)</span>
+        <input type="text" id="searchProxyUrl" placeholder="https://your-worker.workers.dev" />
       </label>
       <div class="toggle-row">
         <div>
@@ -469,7 +469,7 @@ const state = {
   prompts: LS.get("gamma.prompts", []),          // [{id,name,body}]
   activePrompt: LS.get("gamma.activePrompt", null),
   webSearch: LS.get("gamma.webSearch", false),
-  searxUrl: LS.get("gamma.searxUrl", "https://searx.be"),
+  searchProxyUrl: LS.get("gamma.searchProxyUrl", ""),
   writingRoom: LS.get("gamma.writingRoom", false),
   streamThink: LS.get("gamma.streamThink", true),
   roomPrompts: LS.get("gamma.roomPrompts", {}),   // {outline,cast,prose,polish} live stage prompts
@@ -497,7 +497,7 @@ const el = {
   newChat: $("newChat"), saveChatFile: $("saveChatFile"), openChatFile: $("openChatFile"), chatList: $("chatList"),
   promptList: $("promptList"), promptName: $("promptName"), promptBody: $("promptBody"),
   savePrompt: $("savePrompt"), newPrompt: $("newPrompt"),
-  webSearch: $("webSearch"), searxUrl: $("searxUrl"),
+  webSearch: $("webSearch"), searchProxyUrl: $("searchProxyUrl"),
   writingRoom: $("writingRoom"), streamThink: $("streamThink"),
   autoDream: $("autoDream"), dreamNow: $("dreamNow"), rememberNow: $("rememberNow"),
   memoryList: $("memoryList"), clearMemories: $("clearMemories"),
@@ -541,7 +541,7 @@ function syncControls() {
   el.planPill.classList.toggle("on", isCoding);
   el.planPill.title = state.baseUrl;
   el.webSearch.checked = state.webSearch;
-  el.searxUrl.value = state.searxUrl;
+  el.searchProxyUrl.value = state.searchProxyUrl;
   el.writingRoom.checked = state.writingRoom;
   el.streamThink.checked = state.streamThink;
   el.autoDream.checked = state.autoDream;
@@ -936,7 +936,7 @@ el.planSelect.onchange = () => {
   syncControls();
 };
 el.webSearch.onchange = () => { state.webSearch = el.webSearch.checked; LS.set("gamma.webSearch", state.webSearch); syncControls(); };
-el.searxUrl.oninput = () => { state.searxUrl = el.searxUrl.value.trim().replace(/\/+$/, ""); LS.set("gamma.searxUrl", state.searxUrl); };
+el.searchProxyUrl.oninput = () => { state.searchProxyUrl = el.searchProxyUrl.value.trim().replace(/\/+$/, ""); LS.set("gamma.searchProxyUrl", state.searchProxyUrl); };
 el.writingRoom.onchange = () => { state.writingRoom = el.writingRoom.checked; LS.set("gamma.writingRoom", state.writingRoom); syncControls(); };
 el.streamThink.onchange = () => { state.streamThink = el.streamThink.checked; LS.set("gamma.streamThink", state.streamThink); };
 el.autoDream.onchange = () => { state.autoDream = el.autoDream.checked; LS.set("gamma.autoDream", state.autoDream); };
@@ -1263,26 +1263,26 @@ function addMsgActions(wrap, role) {
 
 /* =================================================================
    Live web search
-   Z.ai's own search mechanisms (inline chat-completions "web_search" tool,
-   and the hosted "Web Search Prime" MCP server) both turned out to be
-   unreliable on Coding Plan accounts, and Google's Custom Search API no
-   longer allows new search engines to search the whole web (locked behind
-   an enterprise sales form). So Gamma queries a public SearXNG instance
-   instead — an open-source meta search engine with a free JSON API and no
-   key required — and feeds the results to the model as grounding context.
-   Public instances vary in uptime/CORS support, so the instance URL is
-   user-editable in the sidebar in case the default one stops working.
+   Every backend that doesn't require running your own server turned out
+   to be a dead end: Z.ai's hosted search (401s regardless of billing
+   balance), Google Custom Search (whole-web search is now gated behind
+   an enterprise sales form for new search engines), and public SearXNG
+   instances (most disable the JSON API and/or never send CORS headers,
+   so the browser silently rejects the response). A server you control
+   doesn't have any of those problems, so Gamma calls a small proxy you
+   deploy yourself — see search-proxy-worker.js, a Cloudflare Worker on
+   the free tier that fetches search results server-side (no CORS issue
+   there) and returns them with CORS headers attached for the browser.
 ================================================================= */
 async function webSearchLookup(query, { signal } = {}) {
-  if (!state.searxUrl) throw new Error("Add a SearXNG instance URL in the sidebar first.");
-  const url = new URL("/search", state.searxUrl);
+  if (!state.searchProxyUrl) throw new Error("Add your search proxy URL in the sidebar first (see search-proxy-worker.js).");
+  const url = new URL(state.searchProxyUrl);
   url.searchParams.set("q", query.slice(0, 300));
-  url.searchParams.set("format", "json");
 
   const res = await fetch(url.toString(), { signal, headers: { "Accept": "application/json" } });
-  if (!res.ok) throw new Error(`SearXNG error ${res.status}: ${res.statusText}`);
+  if (!res.ok) throw new Error(`Search proxy error ${res.status}: ${res.statusText}`);
   const data = await res.json().catch(() => {
-    throw new Error("SearXNG didn't return JSON — this instance may have the JSON format disabled. Try a different instance URL.");
+    throw new Error("Search proxy didn't return JSON. Check the worker is deployed correctly.");
   });
   const results = data.results || [];
   return results.slice(0, 5).map(r => ({
