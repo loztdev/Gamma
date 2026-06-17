@@ -755,7 +755,7 @@ function renderChat() {
     else if (m.kind === "dream") addDreamMessage(m.content);
     else if (m.kind === "memory") addMemoryMessage(m.content, m.reasoning);
     else if (m.kind === "compression") addCompressionMessage(m.content, m.stats);
-    else addStaticAssistant(m.content);
+    else addStaticAssistant(m.content, m.reasoning);
   }
   scrollToBottom();
   updateHeadroomUI();
@@ -1317,15 +1317,22 @@ function addAssistantMessage() {
   return { wrap, slots };
 }
 
-/** Renders a finished assistant message (used when loading saved chats). */
-function addStaticAssistant(text) {
+/** Renders a finished assistant message (used when loading saved chats).
+ *  `reasoning`, when present, is restored as a collapsed "Thought process"
+ *  block above the answer, so it isn't lost on chat switch or reload. */
+function addStaticAssistant(text, reasoning) {
   el.empty.style.display = "none";
   const wrap = document.createElement("div");
   wrap.className = "msg-wrap";
+  const hasReasoning = reasoning && reasoning.trim();
+  const thinkHtml = hasReasoning
+    ? `<details class="think"><summary><span class="ico">✓</span> <span class="t">Thought process</span></summary><div class="inner"></div></details>`
+    : "";
   wrap.innerHTML = `<div class="msg">
       <div class="avatar bot">Γ</div>
-      <div class="body"><div class="who">GLM-5.2</div><div class="content"></div></div>
+      <div class="body"><div class="who">GLM-5.2</div>${thinkHtml}<div class="content"></div></div>
     </div>`;
+  if (hasReasoning) wrap.querySelector(".think .inner").textContent = reasoning.trim();
   wrap.querySelector(".content").innerHTML = renderMd(text);
   el.messages.appendChild(wrap);
   addMsgActions(wrap, "assistant");
@@ -1743,12 +1750,18 @@ function memoryBlock() {
 }
 
 /** Runs one assistant turn, letting the model call web_search itself (rather
- *  than the app pre-searching the raw user message) when web search is on. */
+ *  than the app pre-searching the raw user message) when web search is on.
+ *  Returns {content, reasoning}; the content block and think blocks are
+ *  created lazily so they land in the DOM in the order they actually
+ *  stream in (reasoning before the answer it led to), instead of the
+ *  content block always sitting above thinking that arrives later. */
 async function runToolCallTurn(apiMessages, slots, signal) {
-  const out = makeContentBlock(slots);
+  let out = null;
   let think = null;
+  let reasoning = "";
   const useTools = state.webSearch ? [WEB_SEARCH_TOOL] : undefined;
   const model = hasImageContent(apiMessages) ? (state.visionModelId || "glm-5v-turbo") : undefined;
+  const getOut = () => out || (out = makeContentBlock(slots));
 
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -1757,15 +1770,15 @@ async function runToolCallTurn(apiMessages, slots, signal) {
         messages: apiMessages,
         tools: useTools,
         model,
-        onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
-        onContent: (t) => out.append(t),
+        onThink: (t) => { reasoning += t; if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
+        onContent: (t) => getOut().append(t),
         signal,
       });
       if (think) { think.done("Thought process"); think.hideIfEmpty(); }
 
       if (finishReason !== "tool_calls" || !toolCalls.length) {
-        out.done();
-        return content || "";
+        getOut().done();
+        return { content: content || "", reasoning };
       }
 
       const calls = toolCalls.map((tc, i) => ({
@@ -1800,16 +1813,16 @@ async function runToolCallTurn(apiMessages, slots, signal) {
     const { content } = await streamGLM({
       messages: apiMessages,
       model,
-      onThink: (t) => { if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
-      onContent: (t) => out.append(t),
+      onThink: (t) => { reasoning += t; if (!think) think = makeThinkBlock(slots, "Thinking…"); think.append(t); },
+      onContent: (t) => getOut().append(t),
       signal,
     });
     if (think) { think.done("Thought process"); think.hideIfEmpty(); }
-    out.done();
-    return content || "";
+    getOut().done();
+    return { content: content || "", reasoning };
   } catch (err) {
     if (think) think.hideIfEmpty();
-    if (err.name === "AbortError") { out.append("\n\n_(stopped)_"); out.done(); }
+    if (err.name === "AbortError") { getOut().append("\n\n_(stopped)_"); getOut().done(); }
     throw err;
   }
 }
@@ -1818,8 +1831,8 @@ async function runNormal(userText) {
   await maybeCompress();
   const { wrap, slots } = addAssistantMessage();
   try {
-    const content = await runToolCallTurn(buildMessages(), slots, currentAbort.signal);
-    messages().push({ role: "assistant", content: content || "*(no content returned)*" });
+    const { content, reasoning } = await runToolCallTurn(buildMessages(), slots, currentAbort.signal);
+    messages().push({ role: "assistant", content: content || "*(no content returned)*", reasoning });
     touchChat();
     addMsgActions(wrap, "assistant");
   } catch (err) {
