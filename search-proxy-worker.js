@@ -40,10 +40,20 @@ export default {
     }
 
     try {
-      let results = await fetchDuckDuckGo(q);
-      if (!results.length) results = await fetchSearxng(q);
+      const ddg = await fetchDuckDuckGo(q);
+      let results = ddg.results;
+      let searx = null;
+      if (!results.length) {
+        searx = await fetchSearxng(q);
+        results = searx.results;
+      }
 
-      return new Response(JSON.stringify({ results: results.slice(0, 8) }), {
+      // `debug` shows what each provider actually did — remove once this is
+      // working reliably, it's only here to diagnose why both came back empty.
+      return new Response(JSON.stringify({
+        results: results.slice(0, 8),
+        debug: { ddg: ddg.debug, searx: searx && searx.debug },
+      }), {
         headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     } catch (err) {
@@ -66,12 +76,17 @@ const BROWSER_HEADERS = {
 };
 
 async function fetchDuckDuckGo(q) {
-  const res = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q), {
-    headers: BROWSER_HEADERS,
-  });
-  if (!res.ok) return [];
-  const html = await res.text();
-  return parseDuckDuckGoHtml(html);
+  try {
+    const res = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q), {
+      headers: BROWSER_HEADERS,
+    });
+    if (!res.ok) return { results: [], debug: { status: res.status, statusText: res.statusText } };
+    const html = await res.text();
+    const results = parseDuckDuckGoHtml(html);
+    return { results, debug: { status: res.status, htmlLength: html.length, parsedCount: results.length } };
+  } catch (err) {
+    return { results: [], debug: { error: String(err && err.message || err) } };
+  }
 }
 
 // Fallback when DuckDuckGo comes back empty. The CORS issue that ruled out
@@ -83,15 +98,17 @@ async function fetchSearxng(q) {
     const res = await fetch("https://searx.be/search?format=json&q=" + encodeURIComponent(q), {
       headers: { Accept: "application/json", ...BROWSER_HEADERS },
     });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.results || []).map(r => ({
+    if (!res.ok) return { results: [], debug: { status: res.status, statusText: res.statusText } };
+    const data = await res.json().catch(() => null);
+    if (!data) return { results: [], debug: { status: res.status, error: "non-JSON response" } };
+    const results = (data.results || []).map(r => ({
       title: (r.title || "Untitled").trim(),
       url: r.url || "",
       content: (r.content || "").trim(),
     }));
-  } catch {
-    return [];
+    return { results, debug: { status: res.status, rawCount: (data.results || []).length } };
+  } catch (err) {
+    return { results: [], debug: { error: String(err && err.message || err) } };
   }
 }
 
