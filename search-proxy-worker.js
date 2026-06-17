@@ -71,7 +71,7 @@ export default {
         if (!results.length) results = await fetchSearxng(q);
       }
 
-      return new Response(JSON.stringify({ results: results.slice(0, 8) }), {
+      return new Response(JSON.stringify({ results: results.slice(0, 10) }), {
         headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     } catch (err) {
@@ -84,7 +84,7 @@ export default {
 };
 
 async function fetchBrave(q, key) {
-  const res = await fetch("https://api.search.brave.com/res/v1/web/search?count=8&q=" + encodeURIComponent(q), {
+  const res = await fetch("https://api.search.brave.com/res/v1/web/search?count=10&q=" + encodeURIComponent(q), {
     headers: { Accept: "application/json", "X-Subscription-Token": key },
   });
   if (!res.ok) throw new Error(`Brave Search error ${res.status}: ${res.statusText}`);
