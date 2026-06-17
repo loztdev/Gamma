@@ -1558,12 +1558,9 @@ function memoryBlock() {
   return "## Memories\nThings you remember from earlier conversations (treat as your own lasting recollections):\n" + lines;
 }
 
-async function runNormal(userText) {
-  await maybeCompress();
-  const { wrap, slots } = addAssistantMessage();
-  const extraSystem = await maybeWebSearch(slots, userText, state.webSearch, currentAbort.signal);
-  let think = null;
-  if (state.streamThink) think = makeThinkBlock(slots, "Thinking…");
+/** Runs one assistant turn, letting the model call web_search itself (rather
+ *  than the app pre-searching the raw user message) when web search is on. */
+async function runToolCallTurn(apiMessages, slots, signal) {
   const out = makeContentBlock(slots);
   let think = null;
   const useTools = state.webSearch ? [WEB_SEARCH_TOOL] : undefined;
@@ -1631,6 +1628,7 @@ async function runNormal(userText) {
 }
 
 async function runNormal(userText) {
+  await maybeCompress();
   const { wrap, slots } = addAssistantMessage();
   try {
     const content = await runToolCallTurn(buildMessages(), slots, currentAbort.signal);
