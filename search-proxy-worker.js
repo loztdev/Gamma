@@ -2,13 +2,13 @@
  * Gamma search proxy — deploy this as a Cloudflare Worker (free tier).
  *
  * Why this exists: free web search backends (Z.ai's hosted search, Google
- * Custom Search, public SearXNG instances) all turned out to be unusable
- * from a pure client-side app — either gated behind paid/enterprise tiers,
- * or blocked by the search provider's own CORS policy (browsers refuse the
- * response even though the request itself succeeds). A server you control
- * doesn't have that problem: server-to-server requests aren't subject to
- * CORS, so this worker fetches DuckDuckGo's HTML results page itself and
- * hands the parsed results back to the browser with CORS headers attached.
+ * Custom Search, public SearXNG instances called directly from the browser)
+ * all turned out to be unusable from a pure client-side app — either gated
+ * behind paid/enterprise tiers, or blocked by the search provider's own
+ * CORS policy. A server you control doesn't have that problem: this worker
+ * scrapes DuckDuckGo's HTML results server-side (falling back to a public
+ * SearXNG instance's JSON API if DDG comes back empty) and hands parsed
+ * results back to the browser with CORS headers attached.
  *
  * Deploy (no local tooling required):
  *   1. https://dash.cloudflare.com -> Workers & Pages -> Create -> Create Worker
@@ -40,14 +40,10 @@ export default {
     }
 
     try {
-      const ddgUrl = "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q);
-      const res = await fetch(ddgUrl, {
-        headers: { "User-Agent": "Mozilla/5.0 (compatible; GammaSearchProxy/1.0)" },
-      });
-      const html = await res.text();
-      const results = parseDuckDuckGoHtml(html).slice(0, 8);
+      let results = await fetchDuckDuckGo(q);
+      if (!results.length) results = await fetchSearxng(q);
 
-      return new Response(JSON.stringify({ results }), {
+      return new Response(JSON.stringify({ results: results.slice(0, 8) }), {
         headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     } catch (err) {
@@ -58,6 +54,46 @@ export default {
     }
   },
 };
+
+// Real browser UA + headers — DuckDuckGo serves a stripped, resultless page
+// to traffic that looks automated (e.g. UAs with a "compatible; X/1.0" crawler
+// signature), and it does this inconsistently per-query, not on every request.
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Referer": "https://duckduckgo.com/",
+};
+
+async function fetchDuckDuckGo(q) {
+  const res = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q), {
+    headers: BROWSER_HEADERS,
+  });
+  if (!res.ok) return [];
+  const html = await res.text();
+  return parseDuckDuckGoHtml(html);
+}
+
+// Fallback when DuckDuckGo comes back empty. The CORS issue that ruled out
+// public SearXNG instances for the browser doesn't apply here — this fetch
+// happens server-to-server, so any instance with JSON enabled works
+// regardless of its CORS config.
+async function fetchSearxng(q) {
+  try {
+    const res = await fetch("https://searx.be/search?format=json&q=" + encodeURIComponent(q), {
+      headers: { Accept: "application/json", ...BROWSER_HEADERS },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.results || []).map(r => ({
+      title: (r.title || "Untitled").trim(),
+      url: r.url || "",
+      content: (r.content || "").trim(),
+    }));
+  } catch {
+    return [];
+  }
+}
 
 function parseDuckDuckGoHtml(html) {
   const results = [];
