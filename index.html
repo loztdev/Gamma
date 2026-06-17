@@ -1530,18 +1530,37 @@ function addMsgActions(wrap, role) {
    the free tier that fetches search results server-side (no CORS issue
    there) and returns them with CORS headers attached for the browser.
 ================================================================= */
+// The search provider's actual throughput has turned out to be lower than
+// advertised in practice, so Gamma self-throttles to a hard 2 requests/sec
+// instead of trusting the provider to enforce its own limit — this queues
+// calls a beat apart rather than letting them 429.
+const SEARCH_MIN_INTERVAL_MS = 500;
+let searchThrottleGate = Promise.resolve();
+let lastSearchAt = 0;
+function throttleSearch() {
+  const wait = searchThrottleGate.then(() => {
+    const delay = Math.max(0, lastSearchAt + SEARCH_MIN_INTERVAL_MS - Date.now());
+    lastSearchAt = Date.now() + delay;
+    return delay > 0 ? new Promise((r) => setTimeout(r, delay)) : undefined;
+  });
+  searchThrottleGate = wait.catch(() => {});
+  return wait;
+}
+
 async function webSearchLookup(query, { signal } = {}) {
   if (!state.searchProxyUrl) throw new Error("Add your search proxy URL in the sidebar first (see search-proxy-worker.js).");
+  await throttleSearch();
   const url = new URL(state.searchProxyUrl);
   url.searchParams.set("q", query.slice(0, 300));
 
   const res = await fetch(url.toString(), { signal, headers: { "Accept": "application/json" } });
+  if (res.status === 429) throw new Error("Rate limited by the search provider — try again in a moment.");
   if (!res.ok) throw new Error(`Search proxy error ${res.status}: ${res.statusText}`);
   const data = await res.json().catch(() => {
     throw new Error("Search proxy didn't return JSON. Check the worker is deployed correctly.");
   });
   const results = data.results || [];
-  return results.slice(0, 5).map(r => ({
+  return results.slice(0, 10).map(r => ({
     title: (r.title || "Untitled").trim(),
     link: r.url || "",
     content: (r.content || "").trim(),
@@ -1549,7 +1568,10 @@ async function webSearchLookup(query, { signal } = {}) {
 }
 
 function webResultsToContext(query, results) {
-  if (!results.length) return "";
+  if (!results.length) {
+    return `## Live web search for: "${query}"\nNo results came back for this query (the search provider may be rate-limited or the query returned nothing). ` +
+      "Tell the user briefly, then either try a rephrased web_search query or answer from general knowledge.";
+  }
   const lines = results.map((r, i) =>
     `${i + 1}. ${r.title}${r.link ? " — " + r.link : ""}\n${r.content}`.trim()).join("\n\n");
   return `## Live web search results for: "${query}"\n${lines}\n\n` +
